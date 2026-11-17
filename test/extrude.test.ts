@@ -256,41 +256,80 @@ test('p: an offset of a union and of a difference match OpenSCAD\'s fine mesh', 
   }
 });
 
-test('q: a shape the kernel cannot shrink never loses geometry', async () => {
-  // OpenCascade cannot offset a body with a slot's rounded end inward. Dropping it would leave a window out
-  // of the plate, so the part must either be built whole or fall back to the mesh and say why.
+test('q: rounding the corners of a shape with a slot cut out of it keeps the slot', async () => {
+  // The old solid offset could not shrink a body with a slot's rounded end. Offsetting the wires can. Shrinking
+  // by 2 widens the slot to a radius of 6 and rounding by 2 narrows it back, so only the four outside corners
+  // change: each loses 2 squared times (1 - pi / 4), which is 4 - pi. The slot is 20 long between its centres and 8 wide.
+  const slot = 20 * 8 + 16 * pi;
   const source = 'linear_extrude(5) offset(r = 2) offset(delta = -2) difference() { square(40); hull() { translate([10, 20]) circle(r = 4); translate([30, 20]) circle(r = 4); } }';
-  const warn = console.warn;
-  console.warn = () => {};
-  try {
-    const { mesh } = await build(source);
-    const { csg } = await evaluateScad({ 'design.scad': source }, 'design.scad', openScad);
-    const fine = csg.replace(/\$fn = 0, \$fa = [^,)]+, \$fs = [^,)]+/g, '$fn = 0, $fa = 1, $fs = 0.05');
-    near(mesh.volume, meshVolume(parseBinaryStl(await renderMesh(fine, openScad))), 3e-3);
-    if (mesh.quality === 'faceted') assert.equal(mesh.reason, mismatchReason);
-  } finally {
-    console.warn = warn;
-  }
+  const { step } = await exact(source, 5 * (1600 - slot - 4 * (4 - pi)));
+  assert.match(step, /CYLINDRICAL_SURFACE/);
 });
 
-test('r: a small body the kernel cannot shrink is not dropped, though the check would not notice', async () => {
-  // OpenCascade cannot shrink a circle cut by a straight line. This one floats inside a frame, so the
-  // bounding box does not give it away, and it is under 0.1% of the volume, below the check's 0.3%. Only
-  // the builder itself can keep it.
-  const source = `linear_extrude(5) offset(r = 1) offset(delta = -1) union() {
+test('r: a small body that a shrink dropped before is kept, and the volume says so', async () => {
+  // A D shape floats in the window of a frame: a circle of radius 6 cut by the line y = 3. Shrinking by 1 leaves
+  // a circle of radius 5 cut by y = 2, whose segment is r squared times acos(d / r) less d times the root of
+  // r squared less d squared. It is half a thousandth of the part, below the check against OpenSCAD's mesh, so
+  // only the volume worked out here can tell that it is there. The frame loses 1 from every side: 398 by 398,
+  // less a window 202 by 202.
+  const segment = 25 * Math.acos(0.4) - 2 * Math.sqrt(21);
+  const d = pi * 25 - segment;
+  const frame = 398 * 398 - 202 * 202;
+  const source = `linear_extrude(5) offset(delta = -1) union() {
     difference() { square(400); translate([100, 100]) square(200); }
     translate([200, 200]) intersection() { circle(r = 6); translate([-6, -6]) square([12, 9]); }
   }`;
-  const warn = console.warn;
-  console.warn = () => {};
-  try {
+  await exact(source, 5 * (frame + d), 2e-5);
+});
+
+test('s: a plate with 135 round holes is exact, and each hole is one cylinder', async () => {
+  // 135 holes of radius 2 in a 300 by 100 plate, 2 thick. Each is two shapes, so this is well over the old limit of 100.
+  const source = 'linear_extrude(2) difference() { square([300, 100]); for (i = [0 : 14], j = [0 : 8]) translate([10 + i * 20, 10 + j * 10]) circle(d = 4); }';
+  const { step } = await exact(source, 2 * (30000 - 540 * pi));
+  assert.equal(step.match(/CYLINDRICAL_SURFACE\(/g)?.length, 135);
+});
+
+test('t: a chain of overlapping slots becomes one slot', async () => {
+  // Twenty hulls of two circles of diameter 3, two apart, make a slot 40 long between its centres.
+  const source = 'linear_extrude(4) for (i = [0 : 19]) hull() { translate([i * 2, 0]) circle(d = 3); translate([i * 2 + 2, 0]) circle(d = 3); }';
+  const { faces } = await exact(source, 4 * (40 * 3 + 2.25 * pi));
+  assert.equal(faces, 6);
+});
+
+test('u: opening a shape with a hole in it rounds the outside corners and keeps the hole', async () => {
+  // A 40 square with a hole of radius 10. Shrinking by 3 widens the hole to 13, rounding by 3 brings it back, and the
+  // four outside corners lose 3 squared times (4 - pi) between them.
+  const source = 'linear_extrude(5) offset(r = 3) offset(delta = -3) difference() { square(40); translate([20, 20]) circle(r = 10); }';
+  const { step } = await exact(source, 5 * (1600 - 100 * pi - 9 * (4 - pi)));
+  assert.match(step, /CYLINDRICAL_SURFACE/);
+});
+
+test('v: a body narrower than twice the shrink vanishes and a neck splits a body in two', async () => {
+  // Shrinking by 3: the 4 square goes, the 10 square becomes a 4 square.
+  await exact('linear_extrude(5) offset(delta = -3) { square(4); translate([10, 0]) square(10); }', 5 * 16);
+  // Two 10 squares joined by a neck 2 wide and 10 long. Shrinking by 1.5 takes the neck away and leaves two 7 squares.
+  const dumbbell = 'polygon([[0, 0], [10, 0], [10, 4], [20, 4], [20, 0], [30, 0], [30, 10], [20, 10], [20, 6], [10, 6], [10, 10], [0, 10]])';
+  const { mesh } = await exact(`linear_extrude(5) offset(delta = -1.5) ${dumbbell};`, 5 * 98);
+  assert.ok(mesh.volume > 0);
+});
+
+test('w: the windows of a plate: squares cut by circles and slots, rounded, match OpenSCAD\'s fine mesh', async () => {
+  // The shape that kept the owner's plates faceted: a grid of windows, some cut by a circle on an edge, a slot
+  // across the middle, and a thin web between them, opened by 3.
+  const sources = [
+    `linear_extrude(5) offset(r = 3) offset(delta = -3) difference() {
+      intersection() { translate([4, 4]) square([112, 82]); for (gx = [0 : 30 : 90], gy = [0 : 30 : 60]) translate([gx + 3.5, gy + 3.5]) square(23); }
+      translate([0, 45]) circle(r = 13);
+      hull() { translate([60, 30]) circle(r = 11); translate([60, 60]) circle(r = 11); }
+    }`,
+    'linear_extrude(5) offset(r = 3) offset(delta = -3) difference() { square([40, 40]); translate([0, 20]) circle(r = 10); }',
+  ];
+  for (const source of sources) {
     const { mesh } = await build(source);
+    assert.equal(mesh.quality, 'exact', `${source} came out ${mesh.quality}: ${mesh.reason}`);
     const { csg } = await evaluateScad({ 'design.scad': source }, 'design.scad', openScad);
     const fine = csg.replace(/\$fn = 0, \$fa = [^,)]+, \$fs = [^,)]+/g, '$fn = 0, $fa = 1, $fs = 0.05');
-    near(mesh.volume, meshVolume(parseBinaryStl(await renderMesh(fine, openScad))), 1e-4);
-    if (mesh.quality === 'faceted') assert.equal(mesh.reason, mismatchReason);
-  } finally {
-    console.warn = warn;
+    near(mesh.volume, meshVolume(parseBinaryStl(await renderMesh(fine, openScad))), 3e-3);
   }
 });
 
@@ -307,7 +346,7 @@ test('shapes the exact builder cannot extrude stay faceted and say why', async (
     ['cylinder(h = 5, r1 = 3, r2 = 2, $fn = 8);', 'cylinder with $fn'],
     ['sphere(3, $fn = 12);', 'sphere with $fn'],
     ['multmatrix([[1, 0.3, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]) cube(4);', 'multmatrix'],
-    ['linear_extrude(2) for (i = [0 : 149]) translate([i * 3, 0]) circle(1);', 'linear_extrude with more than 100 shapes'],
+    ['linear_extrude(2) for (i = [0 : 249]) translate([i * 3, 0]) circle(1);', 'linear_extrude with more than 400 shapes'],
   ];
   for (const [source, reason] of cases) {
     const { mesh } = await build(source);

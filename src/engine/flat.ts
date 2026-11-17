@@ -1,8 +1,8 @@
 import type { CsgNode, Value } from './csg.ts';
 
 /**
- * The 2D shapes under a linear_extrude, in a form the exact builder can extrude
- * without ever making an arc or circle wire. See docs/PLAN.md, phase 5.
+ * The 2D shapes under a linear_extrude, in a form the exact builder can turn into
+ * faces with straight and circular edges and extrude. See docs/PLAN.md, phase 5.
  *
  * Most outlines are the convex hull of some discs: a circle is one disc, a
  * square is four discs of radius 0, a slot is two discs, a rounded rectangle is
@@ -19,12 +19,15 @@ export type Flat =
   | { kind: 'union' | 'difference' | 'intersection'; items: Flat[] };
 
 /**
- * The most solids one extrusion may need. A part that needs more stays faceted.
- * Booleans of disjoint shapes stay fast far past this, but a chain of overlapping
- * slots costs about 30 ms a leaf (the crank disk's 135 leaves took 4 s), so this
- * keeps the worst part to a few seconds.
+ * The most pieces one extrusion may need. A part that needs more stays faceted. The
+ * Booleans and offsets run on faces, which is cheap. Whole builds, with the
+ * evaluation and the check against OpenSCAD's mesh: the v3 crank disk (148 leaves of
+ * overlapping slots) 3.2 s, 200 disjoint round holes (400 leaves) 4.1 s, a ring of
+ * 120 overlapping slots (360 leaves) 5.9 s. A chain of overlapping slots grows faster
+ * than its length (240 slots, 720 leaves, 27 s), so this keeps the worst part to
+ * a few seconds.
  */
-export const maxLeaves = 100;
+export const maxLeaves = 400;
 const maxRing = 1500;
 const maxPoints = 30_000;
 const near = 1e-9;
@@ -244,7 +247,7 @@ export function tangentPolygon(discs: Disc[]): Point[] {
   return hull(points);
 }
 
-/** How many solids it takes to make a shape. */
+/** How many faces it takes to make a shape. */
 export function leaves(flat: Flat): number {
   if (flat.kind === 'convex') return 1 + flat.discs.filter((disc) => disc.r > 0).length;
   if (flat.kind === 'polygon') return 1 + flat.holes.length;
@@ -438,7 +441,7 @@ function evaluate(node: CsgNode, context: Context): Flat {
       if (sharp !== undefined && named.get('chamfer') === true) stop('offset with chamfer');
       if (amount === 0) return inside;
       const grow = amount as number;
-      // Anything but a convex outline is offset as a solid, see extrude.ts.
+      // Anything but a convex outline is offset as wires, see extrude.ts.
       const general: Flat = { kind: 'offset', amount: grow, round: sharp === undefined, item: inside };
       if (inside.kind !== 'convex') return general;
       const { discs } = inside as Extract<Flat, { kind: 'convex' }>;
