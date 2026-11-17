@@ -151,6 +151,15 @@ const parts = {
       translate([0, 0, -1]) linear_extrude(70) d_shaft(8, 0.2);
       rotate(90) translate([44, 0, -0.01]) linear_extrude(0.6) polygon([[-3, -3], [3, 0], [-3, 3]]);
     }`,
+  cap: `
+    $fa = 4; $fs = 0.5;
+    difference() {
+      cylinder(r = 51, h = 3);
+      translate([0, 0, -1]) linear_extrude(5) offset(delta = 0.1) {
+        rotate(90) circle(r = 45.0845, $fn = 5);
+        for (i = [0 : 4]) rotate(90 + i * 72) translate([42, -0.8]) offset(r = 0.4) offset(delta = -0.4) square([8, 1.6]);
+      }
+    }`,
   spacer: 'linear_extrude(12) difference() { circle(d = 16); intersection() { circle(d = 8.2); translate([-8, -8]) square([16, 11.4]); } }',
   roller: `linear_extrude(110) difference() {
       union() {
@@ -208,11 +217,87 @@ test('an exported drum body keeps its true cylinders and is far smaller than the
   }
 });
 
+// An L: two arms 10 wide, area 500, perimeter 120, five convex corners and one reflex corner.
+const ell = 'polygon([[0, 0], [30, 0], [30, 10], [10, 10], [10, 30], [0, 30]])';
+
+test('m: offset(delta) of a concave polygon keeps every corner sharp', async () => {
+  // Each arm grows by 1 on every side. Five convex corners add 1 each and the reflex corner takes 1 away.
+  await exact(`linear_extrude(4) offset(delta = 1) ${ell};`, 4 * 624);
+  await exact(`linear_extrude(4) offset(delta = -1) ${ell};`, 4 * 384);
+});
+
+test('n: offset(r) of a concave polygon rounds the outside corners', async () => {
+  // Arms [0,30]x[0,10] and [0,10]x[10,30] widened by 1: 619 + 1.25 pi.
+  const { step } = await exact(`linear_extrude(4) offset(r = 1) ${ell};`, 4 * (619 + 1.25 * pi));
+  assert.match(step, /CYLINDRICAL_SURFACE/);
+  // Shrinking rounds the inside corner instead: the sharp result 384 gains a unit square less a quarter disc.
+  await exact(`linear_extrude(4) offset(r = -1) ${ell};`, 4 * (385 - pi / 4));
+});
+
+test('o: rounding the corners of a shape, offset(r) of offset(delta = -r), keeps the inside corner sharp', async () => {
+  // Five outside corners of radius 2 each lose 4 - pi.
+  const { step } = await exact(`linear_extrude(4) offset(r = 2) offset(delta = -2) ${ell};`, 4 * (480 + 5 * pi));
+  assert.match(step, /CYLINDRICAL_SURFACE/);
+});
+
+test('p: an offset of a union and of a difference match OpenSCAD\'s fine mesh', async () => {
+  const sources = [
+    'linear_extrude(3) offset(delta = 0.5) { square(10); translate([6, 6]) circle(r = 5); }',
+    'linear_extrude(3) offset(r = 1) difference() { square(20); translate([10, 10]) circle(r = 4); }',
+    'linear_extrude(3) offset(delta = -1.5) difference() { square(20); translate([10, 10]) circle(r = 4); }',
+    'linear_extrude(3, center = true) translate([5, 5]) rotate(30) offset(r = 0.5) { square([8, 3]); translate([2, 2]) square([3, 8]); }',
+  ];
+  for (const source of sources) {
+    const { mesh } = await build(source);
+    assert.equal(mesh.quality, 'exact', `${source} came out ${mesh.quality}: ${mesh.reason}`);
+    const { csg } = await evaluateScad({ 'design.scad': source }, 'design.scad', openScad);
+    const fine = csg.replace(/\$fn = 0, \$fa = [^,)]+, \$fs = [^,)]+/g, '$fn = 0, $fa = 1, $fs = 0.05');
+    near(mesh.volume, meshVolume(parseBinaryStl(await renderMesh(fine, openScad))), 3e-3);
+  }
+});
+
+test('q: a shape the kernel cannot shrink never loses geometry', async () => {
+  // OpenCascade cannot offset a body with a slot's rounded end inward. Dropping it would leave a window out
+  // of the plate, so the part must either be built whole or fall back to the mesh and say why.
+  const source = 'linear_extrude(5) offset(r = 2) offset(delta = -2) difference() { square(40); hull() { translate([10, 20]) circle(r = 4); translate([30, 20]) circle(r = 4); } }';
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const { mesh } = await build(source);
+    const { csg } = await evaluateScad({ 'design.scad': source }, 'design.scad', openScad);
+    const fine = csg.replace(/\$fn = 0, \$fa = [^,)]+, \$fs = [^,)]+/g, '$fn = 0, $fa = 1, $fs = 0.05');
+    near(mesh.volume, meshVolume(parseBinaryStl(await renderMesh(fine, openScad))), 3e-3);
+    if (mesh.quality === 'faceted') assert.equal(mesh.reason, mismatchReason);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test('r: a small body the kernel cannot shrink is not dropped, though the check would not notice', async () => {
+  // OpenCascade cannot shrink a circle cut by a straight line. This one floats inside a frame, so the
+  // bounding box does not give it away, and it is under 0.1% of the volume, below the check's 0.3%. Only
+  // the builder itself can keep it.
+  const source = `linear_extrude(5) offset(r = 1) offset(delta = -1) union() {
+    difference() { square(400); translate([100, 100]) square(200); }
+    translate([200, 200]) intersection() { circle(r = 6); translate([-6, -6]) square([12, 9]); }
+  }`;
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const { mesh } = await build(source);
+    const { csg } = await evaluateScad({ 'design.scad': source }, 'design.scad', openScad);
+    const fine = csg.replace(/\$fn = 0, \$fa = [^,)]+, \$fs = [^,)]+/g, '$fn = 0, $fa = 1, $fs = 0.05');
+    near(mesh.volume, meshVolume(parseBinaryStl(await renderMesh(fine, openScad))), 1e-4);
+    if (mesh.quality === 'faceted') assert.equal(mesh.reason, mismatchReason);
+  } finally {
+    console.warn = warn;
+  }
+});
+
 test('shapes the exact builder cannot extrude stay faceted and say why', async () => {
   const cases: [string, string][] = [
     ['linear_extrude(5, twist = 30) square(4);', 'linear_extrude with twist'],
     ['linear_extrude(5, scale = 0.5) square(4);', 'linear_extrude with scale'],
-    ['linear_extrude(5) offset(r = 1) difference() { square(10); translate([2, 2]) square(3); }', 'offset of a shape that is not convex'],
     ['linear_extrude(5) offset(delta = 1, chamfer = true) square(10);', 'offset with chamfer'],
     ['linear_extrude(5) hull() { square(4); translate([6, 0]) polygon([[0, 0], [4, 0], [4, 4], [2, 1], [0, 4]]); }', 'hull of a shape that is not convex'],
     ['linear_extrude(5) polygon([[0, 0], [4, 4], [4, 0], [0, 4]]);', 'polygon that crosses itself'],

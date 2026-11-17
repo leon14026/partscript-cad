@@ -14,6 +14,8 @@ export interface Disc { x: number; y: number; r: number }
 export type Flat =
   | { kind: 'convex'; discs: Disc[] }
   | { kind: 'polygon'; outer: Point[]; holes: Point[][] }
+  /** `item` moved outward by `amount` (inward when negative): rounded corners for offset(r), sharp for offset(delta). */
+  | { kind: 'offset'; amount: number; round: boolean; item: Flat }
   | { kind: 'union' | 'difference' | 'intersection'; items: Flat[] };
 
 /**
@@ -246,6 +248,7 @@ export function tangentPolygon(discs: Disc[]): Point[] {
 export function leaves(flat: Flat): number {
   if (flat.kind === 'convex') return 1 + flat.discs.filter((disc) => disc.r > 0).length;
   if (flat.kind === 'polygon') return 1 + flat.holes.length;
+  if (flat.kind === 'offset') return 2 + leaves(flat.item);
   return flat.items.reduce((sum, item) => sum + leaves(item), 0);
 }
 
@@ -354,6 +357,8 @@ function place(flat: Flat, move: Move): Flat {
       return { kind: 'convex', discs: flat.discs.map(({ x, y, r }) => ({ x: at([x, y])[0], y: at([x, y])[1], r: r * move.scale })) };
     case 'polygon':
       return { kind: 'polygon', outer: ring(flat.outer), holes: flat.holes.map(ring) };
+    case 'offset':
+      return { kind: 'offset', amount: flat.amount * move.scale, round: flat.round, item: place(flat.item, move) };
     default:
       return { kind: flat.kind, items: flat.items.map((item) => place(item, move)) };
   }
@@ -432,9 +437,11 @@ function evaluate(node: CsgNode, context: Context): Flat {
       if (!isNumber(amount)) stop('offset');
       if (sharp !== undefined && named.get('chamfer') === true) stop('offset with chamfer');
       if (amount === 0) return inside;
-      if (inside.kind !== 'convex') stop('offset of a shape that is not convex');
-      const { discs } = inside as Extract<Flat, { kind: 'convex' }>;
       const grow = amount as number;
+      // Anything but a convex outline is offset as a solid, see extrude.ts.
+      const general: Flat = { kind: 'offset', amount: grow, round: sharp === undefined, item: inside };
+      if (inside.kind !== 'convex') return general;
+      const { discs } = inside as Extract<Flat, { kind: 'convex' }>;
       if (discs.length === 1 && discs[0].r > 0) {
         const r = discs[0].r + grow;
         return r > 0 ? { kind: 'convex', discs: [{ ...discs[0], r }] } : nothing;
@@ -447,7 +454,7 @@ function evaluate(node: CsgNode, context: Context): Flat {
         const moved = offsetConvex(hull(discs.map((disc): Point => [disc.x, disc.y])), grow);
         return moved.length < 3 ? nothing : convex(moved.map(([x, y]) => ({ x, y, r: 0 })));
       }
-      return stop('offset of a shape that is not convex');
+      return general;
     }
     default:
       return stop(operation);

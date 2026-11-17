@@ -1,4 +1,4 @@
-import type { OcctKernel, ShapeHandle } from 'occt-wasm';
+import { JoinType, type OcctKernel, type ShapeHandle } from 'occt-wasm';
 import { hull, leaves, tangentPolygon, type Disc, type Flat, type Point } from './flat.ts';
 
 type Shape = ShapeHandle | null;
@@ -78,6 +78,42 @@ export function extrudeFlat(kernel: OcctKernel, flat: Flat, height: number): Sha
       }
       case 'union':
         return fuse(pieces(shape, new Set()));
+      case 'offset': {
+        // Offset the solid sideways and cut it back to the height. The solid is made taller first so that
+        // its caps, which an offset moves too, stay clear of the part that is kept. Arc joins round the
+        // corners as offset(r) does, and intersection joins keep them sharp as offset(delta) does.
+        const margin = Math.abs(shape.amount) + 1;
+        const inner = extrudeFlat(kernel, shape.item, height + 2 * margin);
+        if (inner === null) return null;
+        // The kernel offsets one solid at a time, so each separate body goes by itself. Offsetting the bodies
+        // one by one and fusing the results is the same as offsetting their union.
+        const join = shape.round ? JoinType.Arc : JoinType.Intersection;
+        const bodies: ShapeHandle[] = [];
+        for (const body of kernel.getSubShapes(kernel.translate(inner, 0, 0, -margin), 'solid')) {
+          const offset = kernel.offset(body, shape.amount, 1e-6, join);
+          // Shrinking a body away leaves a null shape, but the kernel also returns null for some bodies it
+          // cannot offset (a slot's rounded end, a D shape). Only a body narrower than twice the shrink is
+          // certain to vanish. Dropping any other one would quietly leave geometry out, so it is an error,
+          // and the part is meshed instead.
+          if (kernel.isNull(offset) && shape.amount < 0) {
+            const box = kernel.getBoundingBox(body);
+            if (Math.min(box.xmax - box.xmin, box.ymax - box.ymin) < -2 * shape.amount) continue;
+            throw new Error('the kernel could not shrink a solid');
+          }
+          if (kernel.isNull(offset) || !kernel.isValid(offset)) throw new Error('the offset of a solid was not valid');
+          // The kernel hands the result back as shells, one for each body left. Close each into a solid.
+          for (const shell of kernel.getSubShapes(offset, 'shell')) {
+            const closed = kernel.makeSolid(shell);
+            bodies.push(kernel.getVolume(closed) < 0 ? kernel.reverseShape(closed) : closed);
+          }
+        }
+        if (!bodies.length) return null;
+        const moved = bodies.length === 1 ? bodies[0] : kernel.fuseAll(bodies);
+        if (kernel.subShapeCount(moved, 'solid') === 0) return null;
+        const { xmin, ymin, xmax, ymax } = kernel.getBoundingBox(moved);
+        const slab = kernel.makeBoxFromCorners({ x: xmin - 1, y: ymin - 1, z: 0 }, { x: xmax + 1, y: ymax + 1, z: height });
+        return solidOrEmpty(kernel, kernel.intersect(moved, slab));
+      }
       case 'difference': {
         const [base, ...tools] = shape.items.map(solid);
         if (base == null) return null;
