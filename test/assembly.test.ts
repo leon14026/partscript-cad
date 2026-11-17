@@ -140,7 +140,7 @@ test('two parts from one file share a solid and keep their own places', async ()
   `), 'main.scad');
   assert.equal(model.preview.meshes.length, 2);
   assert.deepEqual(model.preview.partMesh, [0, 0, 1]);
-  assert.equal(model.solids[0], model.solids[1]);
+  assert.equal(model.entries[0], model.entries[1]);
   const world = solvePose(model.preview.assembly, defaultPose(model.preview.assembly));
   assert.deepEqual([world[2][3], world[2][7], world[2][11]], [3.25, 3, 10]);
   const step = new TextDecoder().decode(builder.exportStep(model));
@@ -181,8 +181,8 @@ test('assembly mistakes are explained', async () => {
   await assert.rejects(run('part("a", "a.scad"); cube(3);'), /Move the shapes into a part file/);
   await assert.rejects(run('part("a", "main.scad");'), /cannot use itself/);
   await assert.rejects(run('part("a", "a.scad", colour = "red");'), { file: 'main.scad', line: 1 });
-  await assert.rejects(builder.build({ ...pair('part("a", "a.scad");'), 'a.scad': 'cube(2); translate([5, 0, 0]) cube(2);' }, 'main.scad'),
-    { message: /2 separate solids/, file: 'a.scad' });
+  await assert.rejects(builder.build({ ...pair('part("a", "a.scad");'), 'a.scad': 'difference() { cube(1); cube(2); }' }, 'main.scad'),
+    { message: /no solid volume/, file: 'a.scad' });
   await assert.rejects(builder.build({ ...pair('part("a", "a.scad");'), 'a.scad': 'cube(2);\nnope();' }, 'main.scad'), { file: 'a.scad', line: 2 });
   await assert.rejects(builder.build({ 'main.scad': 'include <lib.scad>\ncube(1);' }, 'main.scad'), /lib\.scad is not in this project/);
   await assert.rejects(builder.build({ 'main.scad': 'use <MCAD/boxes.scad>\ncube(1);' }, 'main.scad'), /External libraries/);

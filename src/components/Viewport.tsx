@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { clampJoint, movingJoints, poseBounds, structureOf, turnsFully, type JointSpec } from '../engine/assembly.ts';
 import { advanceJoint, loopStates, moveJoint } from '../engine/kinematics.ts';
 import type { ModelPreview, Pose } from '../engine/protocol.ts';
+import { partQualities } from '../engine/summary.ts';
 import { createViewer, type ViewAngle } from './viewer.ts';
 
 const angles: { angle: ViewAngle; label: string; name: string }[] = [
@@ -156,7 +157,10 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
       <div className="preview-toolbar">
         <div className="pane-title">
           {model?.isAssembly ? <Boxes size={17} /> : <Box size={17} />} <h2>3D Preview</h2>
-          {model?.isAssembly && <span className="part-count">{partCount} {partCount === 1 ? 'part' : 'parts'}</span>}
+          {model?.isAssembly && <span className="part-count" title={partQualities(model)}>{partCount} {partCount === 1 ? 'part' : 'parts'}</span>}
+          {model && !model.isAssembly && model.meshes[0]?.quality === 'faceted' && (
+            <span className="part-count" title={`Faceted: uses ${model.meshes[0].reason}. STEP has flat faces.`}>faceted</span>
+          )}
         </div>
         <div className="preview-tools">
           <button className="view-tool" type="button" title="Toggle grid and axes" aria-pressed={grid} onClick={() => setGrid(!grid)}><Grid3X3 size={16}/><span>Grid</span></button>

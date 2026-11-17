@@ -27,7 +27,13 @@ async function loadOpenScad() {
     ? new URL('engines/openscad/openscad.js', base).href
     : new URL('../engines/openscad/openscad.js', scope.location.href).href;
   const module = await import(/* @vite-ignore */ url) as { default: OpenScadFactory };
-  return module.default;
+  // Every run starts a fresh instance. Download the engine once and hand it the same bytes each time.
+  const response = await fetch(new URL('openscad.wasm', url));
+  if (!response.ok) throw new CadError('The OpenSCAD engine could not be loaded. Reload the page and try again.');
+  const wasmBinary = await response.arrayBuffer();
+  const create = module.default;
+  const factory: OpenScadFactory = (options) => create({ ...options, wasmBinary });
+  return factory;
 }
 
 function loadBuilder() {

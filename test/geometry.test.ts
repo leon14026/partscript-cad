@@ -79,14 +79,18 @@ test('rotation, mirror, union and intersection preserve valid geometry', async (
   await writeFile(new URL('transformed_intersection.step', output), writeStep(kernel, shape.shape));
 });
 
-test('failed builds reject non-solids, unsupported geometry, and changed facet settings', async () => {
-  await assert.rejects(build('cube(2); translate([5, 0, 0]) cube(2);'), /2 separate solids/);
+test('failed builds reject empty results, bad syntax, unknown modules and missing libraries', async () => {
   await assert.rejects(build('difference() { group() {} cube(4); }'), /no solid volume/);
   await assert.rejects(build('intersection() { difference() { cube(1); cube(2); } cube(4); }'), /no solid volume/);
-  await assert.rejects(build('hull() { cube(1); sphere(1); }'), /hull\(\) is unavailable/);
-  await assert.rejects(build('scale([1, 2, 1]) cube(4);'), /Only translations, rotations and mirrors/);
-  await assert.rejects(build('cylinder(h=5, d=12, $fn=6);'), /facet override/);
   await assert.rejects(build('include <MCAD/boxes.scad>\ncube(4);'), /External libraries/);
   await assert.rejects(build('size = ;\ncube(size);'), { line: 1 });
   await assert.rejects(build('cube(4);\nmisspelled_module();'), { line: 2 });
+});
+
+test('facet settings no longer stop a part, and separate bodies stay in one part', async () => {
+  const round = await build('$fa = 4; $fs = 0.5; cylinder(h = 5, d = 12);');
+  near(round.volume, Math.PI * 36 * 5);
+  const two = await build('cube(2); translate([5, 0, 0]) cube(2);');
+  near(two.volume, 16);
+  assert.equal(kernel.subShapeCount(two.shape, 'solid'), 2);
 });

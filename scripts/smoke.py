@@ -73,6 +73,20 @@ with sync_playwright() as p:
         page.wait_for_timeout(300)
         page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}{index + 1}.png"))
         print(f'{name}: {notice}')
+
+    # A part the exact builder cannot make is meshed by OpenSCAD and reported as faceted.
+    page.click('.cm-content')
+    page.keyboard.press('Control+A')
+    page.keyboard.type('hull() { cube(10); translate([0, 0, 14]) sphere(5, $fn = 12); }', delay=5)
+    page.keyboard.press('Control+Enter')
+    page.wait_for_timeout(200)
+    page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
+    notice = page.inner_text('.output-message').replace('\n', ' ')
+    if 'faceted' not in notice or page.locator('.output-message.error').count():
+        problems.append(f'faceted hull: {notice}')
+    page.wait_for_timeout(300)
+    page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}faceted.png"))
+    print(f'faceted hull: {notice}')
     browser.close()
 
 server.shutdown()

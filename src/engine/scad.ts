@@ -6,16 +6,21 @@ export interface OpenScadModule {
   FS: {
     writeFile(path: string, data: string): void;
     readFile(path: string, options: { encoding: 'utf8' }): string;
+    readFile(path: string): Uint8Array;
   };
 }
 
 export type OpenScadFactory = (options: {
   noInitialRun: true;
+  /** The engine's bytes. Pass them to skip downloading openscad.wasm again for every run. */
+  wasmBinary?: ArrayBuffer | Uint8Array;
   print: (text: string) => void;
   printErr: (text: string) => void;
 }) => Promise<OpenScadModule>;
 
 const csgPath = '/partscript-output.csg';
+const meshInput = '/part.csg';
+const meshOutput = '/part.stl';
 const maxRecords = 1_000;
 
 function lineOf(code: string, index: number) {
@@ -32,7 +37,6 @@ function checkSource(name: string, source: string, files: ProjectFiles) {
     (matched) => matched.replace(/[^\r\n]/g, ' '));
   const restricted = [
     [/\b(?:import|import_stl|import_dxf|surface)\s*\(/, 'Imported geometry is unavailable in this version.'],
-    [/\$(?:fn|fa|fs)\s*=(?!=)/, 'Remove the facet override. This version builds smooth curves for STEP.'],
   ] as const;
   for (const [pattern, message] of restricted) {
     const match = pattern.exec(code);
@@ -119,4 +123,35 @@ export async function evaluateScad(files: ProjectFiles, entry: string, createOpe
     throw new CadError('OpenSCAD produced no geometry.', undefined, entry);
   }
   return { csg, messages, records };
+}
+
+/**
+ * Mesh a CSG dump, or a slice of one, with OpenSCAD's own renderer. Returns a
+ * binary STL. A dump is valid OpenSCAD input, so no libraries are needed.
+ */
+export async function renderMesh(csg: string, createOpenScad: OpenScadFactory): Promise<Uint8Array> {
+  const lines: string[] = [];
+  const print = (text: string) => lines.push(text);
+  const scad = await createOpenScad({ noInitialRun: true, print, printErr: print });
+  scad.FS.writeFile(meshInput, csg);
+  let status: number | undefined;
+  try {
+    status = scad.callMain(['--backend=manifold', '--export-format=binstl', '-o', meshOutput, meshInput]);
+  } catch {
+    status = undefined;
+  }
+
+  // These two are reported as plain lines, with no ERROR or WARNING prefix.
+  if (lines.some((line) => line.includes('Current top level object is not a 3D object'))) {
+    throw new CadError('This file draws only flat 2D shapes. Wrap them in linear_extrude(height) to give them thickness.');
+  }
+  if (lines.some((line) => line.includes('Current top level object is empty'))) {
+    throw new CadError('This model has no solid volume. Check the dimensions and Boolean operations.');
+  }
+  if (status !== 0) throw new CadError('OpenSCAD could not build a mesh for this part.');
+  try {
+    return scad.FS.readFile(meshOutput);
+  } catch {
+    throw new CadError('OpenSCAD produced no mesh for this part.');
+  }
 }

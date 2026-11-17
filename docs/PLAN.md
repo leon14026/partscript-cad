@@ -114,6 +114,8 @@ These were run in Node against the engines in this repository (OpenSCAD `2025.03
 | F16 | The "tangent polygon plus cylinders" recipe of phase 5 gives exact convex outlines. | Slot, rounded rectangle and a hull of two unequal circles: each valid, each volume equal to the hand value to four decimals, 6 to 10 faces after `unifySameDomain`. |
 | F17 | `kernel.scale` returns an invalid shape with zero volume. `kernel.transform` with a uniformly scaled matrix works and keeps flat faces flat. `kernel.generalTransform` handles unequal scales but turns every face into a spline surface. | Unit box scaled by 2: `scale` invalid, `transform` volume 8 with plane faces, `generalTransform` volume 8 with spline faces. |
 
+| F18 | `sewAndSolidify` returns **no solid** when the mesh holds more than one body (10 shells, 0 solids). `sew` followed by `makeSolid` on each shell works. The collapsed triangles OpenSCAD's mesh contains (656 of 31,216 for the v4 machine) are dropped by `importStl` and do no harm. | Whole v4 machine as one part: faceted, 30,558 triangles, build 1.0 s. STEP export 20 s (sew 7 s, merge 9 s), 30.5 MiB, 8,105 faces, re-imports as 10 valid solids with volume 709,384.0 against the mesh's 709,383.97. The largest body alone (23,028 triangles) takes 9 s, so conversion time grows faster than the triangle count. |
+
 ### Dump syntax by example
 
 The parser in phase 1 must accept all of these. Arguments vary in order between OpenSCAD versions, so read them by name.
@@ -169,7 +171,7 @@ const prism = kernel.extrude(kernel.makeFace(wire), 0, 0, height);
 
 **A circle wire does not make a face.** `makeFace(makeWire([makeCircleEdge(...)]))` throws. For an extruded circle call `makeCylinder(r, h)`. Phase 5 is designed so that no arc or circle wire is ever needed.
 
-**Mesh to solid** (F11): `importStl(bytes)` then `sewAndSolidify(kernel.getSubShapes(raw, 'face'), 1e-4)` then `unifySameDomain`. Check `isValid` and compare `getVolume` with the mesh volume. A mesh with several separate bodies may not come back as one solid: collect `getSubShapes(result, 'solid')` and wrap them with `makeCompound`.
+**Mesh to solid** (F11, F18): `importStl(bytes)`, then `sew(getSubShapes(raw, 'face'), 1e-4)`, then `makeSolid` on each of `getSubShapes(sewn, 'shell')`, then `unifySameDomain(makeCompound(solids))`. Check `isValid` and compare `getVolume` with the mesh volume. Do **not** use `sewAndSolidify` for a mesh that may hold several bodies: it returns no solid at all (F18). `meshToSolid` in `solid.ts` does all of this.
 
 **Assemblies in STEP.** `writeAssemblyStep` in `solid.ts` uses `kernel.located(solid, matrix)` (no copy), `makeCompound`, then `document.addShape(compound, { assembly: true })`. Parts built from the same solid share one definition in the file.
 

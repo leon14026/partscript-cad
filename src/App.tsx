@@ -5,6 +5,7 @@ import { Viewport } from './components/Viewport.tsx';
 import { clampJoint, defaultPose, fileNamePattern, structureOf, type AssemblySpec } from './engine/assembly.ts';
 import { BrowserGeometryEngine } from './engine/client.ts';
 import { loopStates, openingPose, settlePose } from './engine/kinematics.ts';
+import { facetedText } from './engine/summary.ts';
 import { CadError, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type BuildStage, type Diagnostic, type ModelPreview, type Pose } from './engine/protocol.ts';
 import { loadDraft, saveDraft } from './drafts.ts';
 import { exampleProjects } from './examples.ts';
@@ -51,10 +52,12 @@ function count(n: number, noun: string) {
 
 function builtText(model: ModelPreview) {
   const { parts, joints } = model.assembly;
-  if (!model.isAssembly) return `Built one solid in ${elapsed(model.buildMs)}.`;
+  const faceted = facetedText(model);
+  const flat = faceted ? ` ${faceted}` : '';
+  if (!model.isAssembly) return `Built one solid in ${elapsed(model.buildMs)}.${flat}`;
   const kept = parts.length > 1 && model.rebuilt < model.meshes.length ? ` ${count(model.rebuilt, 'solid')} rebuilt, the rest reused.` : '';
   const loops = structureOf(model.assembly).closures.length;
-  return `Built ${count(parts.length, 'part')} and ${count(joints.length, 'joint')}${loops ? ` with ${count(loops, 'closed loop')}` : ''} in ${elapsed(model.buildMs)}.${kept}`;
+  return `Built ${count(parts.length, 'part')} and ${count(joints.length, 'joint')}${loops ? ` with ${count(loops, 'closed loop')}` : ''} in ${elapsed(model.buildMs)}.${kept}${flat}`;
 }
 
 /**
@@ -553,7 +556,7 @@ export function App() {
           <p>Change a dimension in the source and press <strong>Run</strong> or <kbd>Ctrl / ⌘ + Enter</kbd>. Inspect the rebuilt model and choose <strong>Export STEP</strong> to download it.</p>
           <dl>
             <dt>Shapes and operations</dt>
-            <dd><code>cube()</code>, <code>cylinder()</code>, <code>sphere()</code>, <code>translate()</code>, <code>rotate()</code>, <code>mirror()</code>, <code>union()</code>, <code>difference()</code>, <code>intersection()</code>.</dd>
+            <dd>Everything OpenSCAD can render builds: <code>linear_extrude()</code>, <code>rotate_extrude()</code>, <code>hull()</code>, <code>offset()</code>, <code>polyhedron()</code>, <code>scale()</code> and the rest. Boxes, cylinders and spheres combined with <code>translate()</code>, <code>rotate()</code>, <code>mirror()</code>, <code>union()</code>, <code>difference()</code> and <code>intersection()</code> export with true curves. Any other part is <em>faceted</em>: it shows and exports as a solid with flat faces, and the build output says which parts and why. Set <code>$fn</code> when you want visible facets.</dd>
             <dt>Parameters</dt>
             <dd>Use OpenSCAD variables, functions, local modules, loops and conditionals. Keep the <code>.scad</code> files for future edits.</dd>
             <dt>Assemblies</dt>
@@ -563,7 +566,7 @@ export function App() {
             <dt>Sharing values</dt>
             <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>Save project</strong> downloads every file as one file a teammate can open.</dd>
             <dt>Model limits</dt>
-            <dd>One connected solid per part file, in millimetres. Collision checks and gears are unavailable. External libraries, imports and facet overrides are unavailable. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
+            <dd>In millimetres. A part must have volume, and a file that draws only flat 2D shapes needs <code>linear_extrude()</code>. Collision checks are unavailable. External libraries and imports are unavailable in this version, and <code>text()</code> fails because no fonts are bundled. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
           </dl>
           <div className="dialog-actions">
             <a className="button button-step" href={`${import.meta.env.BASE_URL}source/partscript-cad-source.zip`} download><Download size={16}/> Download source</a>

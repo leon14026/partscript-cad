@@ -1,11 +1,11 @@
 import type { EdgeData, OcctKernel, ShapeHandle } from 'occt-wasm';
-import { type CsgNode, parseCsg } from './csg.ts';
+import { type CsgNode, parseCsg, rigidProblem } from './csg.ts';
 import type { AssemblySpec, Matrix } from './assembly.ts';
-import { CadError, type Vec3 } from './protocol.ts';
+import { maxTriangles } from './mesh.ts';
+import { CadError, type PartMesh, type Vec3 } from './protocol.ts';
 
 const minLength = 0.0001;
 const maxLength = 1_000_000;
-const maxTriangles = 500_000;
 
 type ShapeResult = ShapeHandle | null;
 
@@ -31,18 +31,15 @@ function cross(a: Vec3, b: Vec3): Vec3 {
 }
 
 function rigidMatrix(input: unknown) {
-  const valid = Array.isArray(input) && input.length === 4 && input.every((row) =>
-    Array.isArray(row) && row.length === 4 && row.every((value) => typeof value === 'number' && Number.isFinite(value)));
-  if (!valid) throw new CadError('The model contains an invalid transformation matrix.');
-  const [x, y, z, w] = input as number[][];
+  const problem = rigidProblem(input);
+  if (problem === 'invalid') throw new CadError('The model contains an invalid transformation matrix.');
+  if (problem === 'scaled') {
+    throw new CadError('Only translations, rotations and mirrors are supported. Set dimensions on the primitive to resize it.');
+  }
+  const [x, y, z] = input as number[][];
   const a: Vec3 = [x[0], y[0], z[0]];
   const b: Vec3 = [x[1], y[1], z[1]];
   const c: Vec3 = [x[2], y[2], z[2]];
-  const tolerance = 0.000004;
-  const residuals = [dot(a, a) - 1, dot(b, b) - 1, dot(c, c) - 1, dot(a, b), dot(a, c), dot(b, c)];
-  if (w[0] !== 0 || w[1] !== 0 || w[2] !== 0 || w[3] !== 1 || residuals.some((r) => Math.abs(r) > tolerance)) {
-    throw new CadError('Only translations, rotations and mirrors are supported. Set dimensions on the primitive to resize it.');
-  }
   if ([x[3], y[3], z[3]].some((value) => Math.abs(value) > maxLength)) {
     throw new CadError('A translation exceeds the supported coordinate range.');
   }
@@ -74,7 +71,7 @@ function edgeSegments({ points, edgeGroups }: EdgeData) {
   return lines;
 }
 
-export function buildSolid(kernel: OcctKernel, csg: string) {
+export function buildSolid(kernel: OcctKernel, csg: string | CsgNode[]) {
   function solidOrEmpty(shape: ShapeHandle): ShapeHandle | null {
     return !kernel.isNull(shape) && kernel.subShapeCount(shape, 'solid') > 0 ? shape : null;
   }
@@ -91,6 +88,8 @@ export function buildSolid(kernel: OcctKernel, csg: string) {
     switch (operation) {
       case 'group':
       case 'union':
+      case 'color':
+      case 'render':
         return fuse(children.map(build));
       case 'difference': {
         const [base, ...tools] = children.map(build);
@@ -121,9 +120,8 @@ export function buildSolid(kernel: OcctKernel, csg: string) {
       }
       case 'sphere':
       case 'cylinder': {
-        if (named.get('$fn') !== 0 || named.get('$fa') !== 12 || named.get('$fs') !== 2) {
-          throw new CadError('Remove the facet override. This version builds smooth curves for STEP.');
-        }
+        // Smooth at any $fa and $fs. Only $fn above zero asks for facets, and unsupported() sends those to the mesh path.
+        if ((named.get('$fn') ?? 0) !== 0) throw new CadError(`${operation}() with $fn has to be built from a mesh.`);
         if (operation === 'sphere') return kernel.makeSphere(length(named.get('r'), 'Sphere radius'));
         const height = length(named.get('h'), 'Cylinder height');
         const bottom = length(named.get('r1'), 'Bottom radius', true);
@@ -132,26 +130,26 @@ export function buildSolid(kernel: OcctKernel, csg: string) {
         const shape = bottom === top ? kernel.makeCylinder(bottom, height) : kernel.makeCone(bottom, top, height);
         return named.get('center') === true ? kernel.translate(shape, 0, 0, -height / 2) : shape;
       }
+      default:
+        throw new CadError(`${operation}() has to be built from a mesh.`);
     }
   }
 
-  const nodes = parseCsg(csg);
+  const nodes = typeof csg === 'string' ? parseCsg(csg) : csg;
   let shape = fuse(nodes.map(build));
   if (shape == null) throw new CadError('This model has no solid volume. Check the dimensions and Boolean operations.');
   const count = kernel.subShapeCount(shape, 'solid');
-  if (count !== 1) {
-    throw new CadError(count > 1
-      ? `This model has ${count} separate solids. Join them into one part before exporting.`
-      : 'This model has no solid volume. Check the dimensions and Boolean operations.');
-  }
-  if (!kernel.isSolid(shape)) [shape] = kernel.getSubShapes(shape, 'solid');
+  if (count < 1) throw new CadError('This model has no solid volume. Check the dimensions and Boolean operations.');
+  // A part can hold several separate bodies. They stay together as one compound.
+  if (count > 1) shape = kernel.makeCompound(kernel.getSubShapes(shape, 'solid'));
+  else if (!kernel.isSolid(shape)) [shape] = kernel.getSubShapes(shape, 'solid');
   if (!kernel.isValid(shape)) throw new CadError('The model is not a valid solid. Check for touching edges and overlapping features.');
   const volume = kernel.getVolume(shape);
   if (!Number.isFinite(volume) || volume <= 0) throw new CadError('This model has no positive solid volume.');
   return { shape, volume };
 }
 
-export function previewSolid(kernel: OcctKernel, shape: ShapeHandle) {
+export function previewSolid(kernel: OcctKernel, shape: ShapeHandle): Omit<PartMesh, 'volume' | 'quality' | 'reason'> {
   const { xmin, ymin, zmin, xmax, ymax, zmax } = kernel.getBoundingBox(shape);
   const min: Vec3 = [xmin, ymin, zmin];
   const max: Vec3 = [xmax, ymax, zmax];
@@ -182,6 +180,42 @@ export function writeStep(kernel: OcctKernel, solid: ShapeHandle) {
   return new TextEncoder().encode(data);
 }
 
+/**
+ * Turn the STL mesh of a faceted part into a solid with flat faces, for STEP.
+ * Sews the triangles into shells, makes a solid from each shell, then merges
+ * triangles that lie in one plane. The caller owns the returned handle. Throws
+ * when the mesh does not close into solids, or when their volume is more than
+ * 0.1% away from the mesh's.
+ *
+ * sewAndSolidify is not used: it returns no solid at all when the mesh holds
+ * more than one body, which any assembly drawn as one part does.
+ */
+export function meshToSolid(kernel: OcctKernel, stl: Uint8Array, meshVolume: number, file: string): ShapeHandle {
+  const mark = kernel.checkpoint();
+  let brep: Uint8Array | undefined;
+  try {
+    const faces = kernel.getSubShapes(kernel.importStl(stl), 'face');
+    const shells = kernel.getSubShapes(kernel.sew(faces, 1e-4), 'shell');
+    const solids = shells.map((shell) => kernel.makeSolid(shell));
+    if (solids.length) {
+      const bodies = kernel.getSubShapes(kernel.unifySameDomain(kernel.makeCompound(solids)), 'solid');
+      const shape = bodies.length === 1 ? bodies[0] : kernel.makeCompound(bodies);
+      const volume = kernel.getVolume(shape);
+      if (bodies.length && kernel.isValid(shape) && Math.abs(volume - meshVolume) <= 0.001 * meshVolume) {
+        brep = kernel.toBREPBinary(shape);
+      }
+    }
+  } catch {
+    brep = undefined;
+  } finally {
+    kernel.releaseSince(mark);
+  }
+  if (!brep) {
+    throw new CadError(`${file} could not be turned into a solid for STEP. It may have faces that touch only along an edge.`, undefined, file);
+  }
+  return kernel.fromBREPBinary(brep);
+}
+
 function isIdentity(matrix: Matrix) {
   return matrix.every((value, i) => Math.abs(value - (i % 5 === 0 ? 1 : 0)) < 1e-12);
 }
@@ -206,7 +240,7 @@ export function writeAssemblyStep(kernel: OcctKernel, name: string, assembly: As
       document.setName(component, part.name);
       const definition = document.getReferredLabel(component);
       if (definition != null) {
-        document.setName(definition, part.file.replace(/\.scad$/i, ''));
+        document.setName(definition, part.file ? part.file.replace(/\.scad$/i, '') : part.name);
         document.setColor(definition, part.color);
       }
       document.setColor(component, part.color);

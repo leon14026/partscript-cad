@@ -37,6 +37,10 @@ export interface PartMesh {
   edgeSegments: Float32Array<ArrayBuffer>;
   bounds: { min: Vec3; max: Vec3 };
   volume: number;
+  /** exact: true curves from OpenCascade. faceted: flat faces from OpenSCAD's own mesh. */
+  quality: 'exact' | 'faceted';
+  /** For a faceted part, the operation that made it so, for example "hull". */
+  reason?: string;
 }
 
 export interface ModelPreview {
