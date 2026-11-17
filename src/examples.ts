@@ -1,4 +1,5 @@
 import { swivelArm } from './assemblyExample.ts';
+import { gearedMechanism } from './gearedExample.ts';
 import { crankRocker } from './linkageExample.ts';
 import type { ProjectFiles } from './engine/protocol.ts';
 
@@ -122,6 +123,12 @@ export const exampleProjects: ExampleProject[] = [
     description: 'A four-bar loop. Play the crank and watch the rocker swing.',
     files: crankRocker,
     open: 'four_bar.scad',
+  },
+  {
+    name: 'Gears and a cam',
+    description: 'A crank turns a wheel twice as fast the other way, and the wheel lifts a plunger by a formula.',
+    files: gearedMechanism,
+    open: 'geared.scad',
   },
   ...examples.map((example) => ({
     name: example.name,

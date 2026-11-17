@@ -1,6 +1,6 @@
-import { Box, Boxes, Expand, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, RotateCcw, RotateCw, TriangleAlert } from 'lucide-react';
+import { Box, Boxes, CornerDownRight, Expand, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, RotateCcw, RotateCw, TriangleAlert } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { clampJoint, movingJoints, poseBounds, structureOf, turnsFully, type JointSpec } from '../engine/assembly.ts';
+import { clampJoint, followerStates, movingJoints, poseBounds, structureOf, turnsFully, type JointSpec } from '../engine/assembly.ts';
 import { advanceJoint, loopStates, moveJoint } from '../engine/kinematics.ts';
 import type { ModelPreview, Pose } from '../engine/protocol.ts';
 import { partQualities } from '../engine/summary.ts';
@@ -150,6 +150,7 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
   const joints = model ? movingJoints(model.assembly) : [];
   const looped = model ? structureOf(model.assembly).looped : [];
   const loops = useMemo(() => (model ? loopStates(model.assembly, pose) : []), [model, pose]);
+  const followers = useMemo(() => (model ? followerStates(model.assembly, pose) : []), [model, pose]);
   const partCount = model?.assembly.parts.length ?? 0;
 
   return (
@@ -205,6 +206,13 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
                     {loop.closed ? <Link2 size={12}/> : <TriangleAlert size={12}/>}
                     <span>{loop.joint}</span>
                     <i>{loop.closed ? 'closes loop' : `open by ${measure.format(Math.round(loop.gap * 100) / 100)} mm`}</i>
+                  </div>
+                ))}
+                {followers.map(({ joint, driver, value }) => (
+                  <div key={joint.name} className="joint-loop" title={`${joint.name} takes its value from ${driver.name}. Move ${driver.name} to move it.`}>
+                    <CornerDownRight size={12}/>
+                    <span>{joint.name}</span>
+                    <i>follows {driver.name} · {measure.format(Math.round(value * 100) / 100)}{joint.type === 'hinge' ? '°' : ' mm'}</i>
                   </div>
                 ))}
               </div>

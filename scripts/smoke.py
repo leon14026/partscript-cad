@@ -64,15 +64,25 @@ with sync_playwright() as p:
         notice = page.inner_text('.output-message').replace('\n', ' ')
         if page.locator('.output-message.error').count():
             problems.append(f'{name}: {notice}')
+        followers = page.locator('.joint-loop', has_text='follows')
+        if name == 'Gears and a cam':
+            # The opening pose has the crank at 30 degrees: the wheel at -60 and the plunger 3 mm up.
+            rows = followers.all_inner_texts()
+            if len(rows) != 2 or 'follows crank' not in rows[0] or '60°' not in rows[0] or 'follows wheel' not in rows[1] or '3 mm' not in rows[1]:
+                problems.append(f'{name}: expected the wheel to follow the crank at -60° and the plunger to follow the wheel at 3 mm, saw {rows}')
         joints = page.locator('.joint-play:not([disabled])')
         if joints.count():
             before = page.locator('.joint-value input').first.input_value()
+            followers_before = followers.all_inner_texts()
             joints.first.click()
             page.wait_for_timeout(900)
             after = page.locator('.joint-value input').first.input_value()
+            followers_after = followers.all_inner_texts()
             joints.first.click()
             if before == after:
                 problems.append(f'{name}: the first joint did not move when played')
+            if followers_before and followers_before == followers_after:
+                problems.append(f'{name}: the joints that follow did not change when the first joint was played: {followers_after}')
         page.wait_for_timeout(300)
         page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}{index + 1}.png"))
         print(f'{name}: {notice}')

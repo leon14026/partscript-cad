@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { OcctKernel } from 'occt-wasm';
-import { defaultPose, movingJoints, poseBounds, solvePose, structureOf, type AssemblySpec } from '../src/engine/assembly.ts';
+import { defaultPose, followerStates, movingJoints, placement, poseBounds, solvePose, structureOf, type AssemblySpec } from '../src/engine/assembly.ts';
 import { ModelBuilder } from '../src/engine/build.ts';
 import { advanceJoint, loopStates, moveJoint, openingPose, settlePose } from '../src/engine/kinematics.ts';
 import type { Pose } from '../src/engine/protocol.ts';
 import type { OpenScadFactory } from '../src/engine/scad.ts';
+import { gearedMechanism } from '../src/gearedExample.ts';
 import { crankRocker } from '../src/linkageExample.ts';
 
 const engine = new URL('../public/engines/openscad/openscad.js', import.meta.url);
@@ -175,4 +176,187 @@ test('a part reached through its own child joint is placed from that side', asyn
   near(joint[1], 30);
   near(distance(point(assembly, pose, 'tool', [8, 5, 0]), joint), 0);
   near(settlePose(assembly, pose).pose.wrist, 8);
+});
+
+// Following joints: a ratio for gears, a table for a cam or any formula.
+
+/** The value a following joint has in a pose. */
+const valueOf = (assembly: AssemblySpec, pose: Pose, name: string) => followerStates(assembly, pose).find((item) => item.joint.name === name)!.value;
+
+test('a following hinge turns by the ratio, and its part is placed by that angle', async () => {
+  const assembly = await assemblyOf(`
+    part("frame", "a.scad"); part("big", "a.scad"); part("small", "a.scad");
+    joint("big", type = "hinge", parent = "frame", child = "big");
+    joint("small", type = "hinge", parent = "frame", child = "small", at = [30, 0, 0], follow = "big", ratio = -2);
+  `);
+  // The follower has no value of its own to set, and the pose does not hold one.
+  assert.deepEqual(movingJoints(assembly).map((joint) => joint.name), ['big']);
+  assert.deepEqual(Object.keys(defaultPose(assembly)), ['big']);
+  for (const [driver, expected] of [[30, -60], [170, -340]]) {
+    near(valueOf(assembly, { big: driver }, 'small'), expected);
+    const world = solvePose(assembly, { big: driver })[2];
+    const wanted = placement([30, 0, 0], [0, 0, expected]);
+    world.forEach((entry, i) => near(entry, wanted[i], 1e-9));
+  }
+  // A value written into the pose for the follower is ignored: the driver decides.
+  near(valueOf(assembly, { big: 30, small: 999 }, 'small'), -60);
+  const stale = solvePose(assembly, { big: 30, small: 999 })[2];
+  solvePose(assembly, { big: 30 })[2].forEach((entry, i) => near(entry, stale[i], 1e-12));
+  // Moving the follower directly does nothing.
+  const same = { big: 30 };
+  assert.equal(moveJoint(assembly, same, 'small', 10).pose, same);
+  assert.equal(advanceJoint(assembly, same, 'small', 10).pose, same);
+});
+
+test('a table is read by linear interpolation, clamps outside its rows, and takes a ratio and offset', async () => {
+  const assembly = await assemblyOf(`
+    part("frame", "a.scad"); part("p", "a.scad"); part("q", "a.scad"); part("r", "a.scad");
+    joint("drive", type = "slider", parent = "frame", child = "p", limits = [-20, 300]);
+    joint("lift", type = "slider", parent = "frame", child = "q", axis = [0, 0, 1],
+          follow = "drive", table = [[0, 0], [90, 10], [180, 0]]);
+    joint("scaled", type = "slider", parent = "frame", child = "r", axis = [0, 0, 1],
+          follow = "drive", ratio = 2, offset = 1, table = [[0, 0], [90, 10], [180, 0]]);
+  `);
+  near(valueOf(assembly, { drive: 45 }, 'lift'), 5);
+  near(valueOf(assembly, { drive: 135 }, 'lift'), 5);
+  near(valueOf(assembly, { drive: -10 }, 'lift'), 0);   // below the first row
+  near(valueOf(assembly, { drive: 250 }, 'lift'), 0);   // above the last row
+  near(valueOf(assembly, { drive: 45 }, 'scaled'), 2 * 5 + 1);
+  // The part really is there: 5 mm up the follower's axis.
+  near(point(assembly, { drive: 45 }, 'q', [0, 0, 0])[2], 5);
+});
+
+test('a full-turn driver is wrapped into a table that spans 360, and a driver with stops is not', async () => {
+  const assembly = await assemblyOf(`
+    part("frame", "a.scad"); part("wheel", "a.scad"); part("pin", "a.scad");
+    joint("wheel", type = "hinge", parent = "frame", child = "wheel");
+    joint("pin", type = "slider", parent = "frame", child = "pin", axis = [0, 0, 1],
+          follow = "wheel", table = [[0, 0], [180, 10], [360, 0]]);
+  `);
+  near(valueOf(assembly, { wheel: 90 }, 'pin'), 5);
+  near(valueOf(assembly, { wheel: -90 }, 'pin'), 5);                         // looks up 270
+  near(valueOf(assembly, { wheel: -170 }, 'pin'), 10 - 10 * (190 - 180) / 180);   // looks up 190
+
+  // The same table behind a hinge that stops at -90 and 90 is clamped to its first row, not wrapped to 270.
+  const stopped = await assemblyOf(`
+    part("frame", "a.scad"); part("wheel", "a.scad"); part("pin", "a.scad");
+    joint("wheel", type = "hinge", parent = "frame", child = "wheel", limits = [-90, 90]);
+    joint("pin", type = "slider", parent = "frame", child = "pin", axis = [0, 0, 1],
+          follow = "wheel", table = [[0, 0], [180, 10], [360, 0]]);
+  `);
+  near(valueOf(stopped, { wheel: -90 }, 'pin'), 0);
+  near(valueOf(stopped, { wheel: 90 }, 'pin'), 5);
+});
+
+test('a table that OpenSCAD computes is followed at its rows and between them', async () => {
+  const assembly = await assemblyOf(`
+    part("frame", "a.scad"); part("wheel", "a.scad"); part("pin", "a.scad");
+    joint("wheel", type = "hinge", parent = "frame", child = "wheel");
+    joint("pin", type = "slider", parent = "frame", child = "pin", axis = [0, 0, 1],
+          follow = "wheel", table = [for (a = [0 : 5 : 360]) [a, 10 * sin(a)]]);
+  `);
+  const [pin] = followerStates(assembly, {});
+  assert.equal(pin.joint.follow!.table!.length, 73);
+  for (const angle of [30, 90, -110]) near(valueOf(assembly, { wheel: angle }, 'pin'), 10 * Math.sin(angle * Math.PI / 180), 1e-3);
+  // Halfway between the rows for 45 and 50 degrees.
+  near(valueOf(assembly, { wheel: 47.5 }, 'pin'), (10 * Math.sin(Math.PI / 4) + 10 * Math.sin(50 * Math.PI / 180)) / 2, 1e-5);
+});
+
+test('followers chain in any order of writing, and a 5,000 row table is read', async () => {
+  const assembly = await assemblyOf(`
+    part("frame", "a.scad"); part("a", "a.scad"); part("b", "a.scad"); part("c", "a.scad"); part("d", "a.scad");
+    joint("a", type = "slider", parent = "frame", child = "a", limits = [0, 100]);
+    // c is written before b, which it follows.
+    joint("c", type = "slider", parent = "frame", child = "c", follow = "b", ratio = 3, offset = 1);
+    joint("b", type = "slider", parent = "frame", child = "b", follow = "a", ratio = 2);
+    joint("d", type = "slider", parent = "frame", child = "d", follow = "a", table = [for (x = [0 : 1 : 4999]) [x, x / 100]]);
+  `);
+  assert.deepEqual(structureOf(assembly).followOrder.map((j) => assembly.joints[j].name), ['b', 'c', 'd']);
+  near(valueOf(assembly, { a: 10 }, 'b'), 20);
+  near(valueOf(assembly, { a: 10 }, 'c'), 61);
+  near(valueOf(assembly, { a: 10 }, 'd'), 0.1);
+  assert.equal(followerStates(assembly, {})[2].joint.follow!.table!.length, 5000);
+});
+
+test('a follower that cannot work is refused with the joint named and what to change', async () => {
+  const bad = async (joints: string, message: RegExp) => assert.rejects(
+    builder.build(blocks(`part("frame", "a.scad"); part("p", "a.scad"); part("q", "a.scad"); ${joints}`), 'main.scad'), message);
+  const base = 'joint("p", type = "hinge", parent = "frame", child = "p");';
+  await bad('joint("a", type = "hinge", parent = "frame", child = "p", follow = "b"); joint("b", type = "hinge", parent = "frame", child = "q", follow = "a");',
+    /joint\("a"\): the follow links go in a circle \(a → b → a\)/);
+  await bad(`${base} joint("q", type = "hinge", parent = "frame", child = "q", follow = "q");`, /joint\("q"\): a joint cannot follow itself/);
+  await bad(`${base} joint("q", type = "hinge", parent = "frame", child = "q", follow = "ghost");`, /joint\("q"\): follows "ghost", which is not a joint/);
+  await bad(`${base} joint("q", type = "hinge", parent = "frame", child = "q", follow = "p", limits = [0, 90]);`, /joint\("q"\): a joint that follows another takes its value from it\. Remove limits and value/);
+  await bad(`${base} joint("q", type = "hinge", parent = "frame", child = "q", follow = "p", value = 10);`, /Remove limits and value/);
+  await bad(`${base} joint("q", type = "fixed", parent = "frame", child = "q", follow = "p");`, /a fixed joint does not move, so it cannot follow/);
+  await bad('joint("p", type = "fixed", parent = "frame", child = "p"); joint("q", type = "hinge", parent = "frame", child = "q", follow = "p");', /follows "p", which is a fixed joint/);
+  await bad(`${base} joint("q", type = "hinge", parent = "frame", child = "q", ratio = 2);`, /joint\("q"\): ratio, offset and table only work with follow/);
+  await bad(`${base} joint("q", type = "slider", parent = "frame", child = "q", follow = "p", table = [[0, 1]]);`, /table needs at least two rows/);
+  await bad(`${base} joint("q", type = "slider", parent = "frame", child = "q", follow = "p", table = [[0, 1], [60, 2], [30, 3]]);`,
+    /table inputs must increase, but row 3 \(30\) does not come after row 2 \(60\)/);
+  await bad(`${base} joint("q", type = "slider", parent = "frame", child = "q", follow = "p", table = [[0, 1], [60]]);`, /table row 2 must be \[input, output\]/);
+  await bad(`${base} joint("q", type = "slider", parent = "frame", child = "q", follow = "p", table = [for (x = [0 : 5000]) [x, x]]);`, /table has 5001 rows\. Use at most 5,000/);
+});
+
+test('a joint on a loop cannot follow, but a joint outside the loop can follow one on it', async () => {
+  const files = (edit: (source: string) => string) => ({ ...crankRocker, 'four_bar.scad': edit(crankRocker['four_bar.scad']) });
+  await assert.rejects(builder.build(files((source) => source.replace('joint("crank_pin", type = "hinge",', 'joint("crank_pin", type = "hinge", follow = "crank",')), 'four_bar.scad'),
+    /joint\("crank_pin"\) follows another joint, so it cannot be part of a closed loop/);
+  await assert.rejects(builder.build(files((source) => source.replace('joint("rocker_pin", type = "hinge",', 'joint("rocker_pin", type = "hinge", follow = "crank",')), 'four_bar.scad'),
+    /joint\("rocker_pin"\) follows another joint, so it cannot be part of a closed loop/);
+  await assert.rejects(builder.build(files((source) => `${source}\npart("extra", "ground.scad");\njoint("extra", type = "hinge", parent = "ground", child = "extra", follow = "rocker_pin");`), 'four_bar.scad'),
+    /follows "rocker_pin", which closes a loop and has no value of its own/);
+});
+
+test('a wheel that follows the crank of a closed linkage stays at minus two cranks through a full turn', async () => {
+  const model = await builder.build({
+    ...crankRocker,
+    'wheel.scad': 'cylinder(r = 10, h = 3);',
+    'four_bar.scad': `${crankRocker['four_bar.scad']}
+      part("wheel", "wheel.scad");
+      joint("wheel", type = "hinge", parent = "ground", child = "wheel", at = [0, -30, 0], follow = "crank", ratio = -2);`,
+  }, 'four_bar.scad');
+  const { assembly } = model.preview;
+  assert.deepEqual(movingJoints(assembly).map((joint) => joint.name), ['crank', 'crank_pin', 'rocker']);
+  let { pose, closed } = openingPose(assembly);
+  assert.equal(closed, true);
+  near(pose.rocker, 71.1, 0.1);   // the follower does not change how the loop assembles
+  for (let i = 0; i < 72; i++) {
+    const moved = advanceJoint(assembly, pose, 'crank', 5);
+    assert.equal(moved.reached, true, `crank stuck at step ${i}`);
+    pose = moved.pose;
+    assert.equal(loopStates(assembly, pose)[0].closed, true);
+    // A point 10 mm along the wheel's x axis, with the wheel turned by minus twice the crank angle.
+    const turn = -2 * pose.crank * Math.PI / 180;
+    const tip = point(assembly, pose, 'wheel', [10, 0, 0]);
+    near(tip[0], 10 * Math.cos(turn), 1e-9);
+    near(tip[1], -30 + 10 * Math.sin(turn), 1e-9);
+  }
+  near(pose.crank, 40, 1e-6);
+});
+
+test('the geared example follows its formulas, and its STEP holds each part where they put it', async () => {
+  const model = await builder.build(gearedMechanism, 'geared.scad');
+  const { assembly } = model.preview;
+  assert.deepEqual(model.preview.partMesh.map((i) => model.preview.meshes[i].quality), ['exact', 'exact', 'exact', 'exact']);
+  assert.deepEqual(movingJoints(assembly).map((joint) => joint.name), ['crank']);
+  // Wheel angle is minus twice the crank angle. The plunger lifts 6 (1 - cos) mm for that angle, from rows 5 degrees apart.
+  for (const crank of [0, 30, 45, 90, 135, 180, -60, -150]) {
+    const wheel = -2 * crank;
+    near(valueOf(assembly, { crank }, 'wheel'), wheel, 1e-9);
+    near(valueOf(assembly, { crank }, 'plunger'), 6 * (1 - Math.cos(wheel * Math.PI / 180)), 2e-3);
+  }
+
+  for (const [crank, lift] of [[30, 3], [90, 12]]) {
+    const step = new TextDecoder().decode(builder.exportStep(model, { crank }));
+    await writeFile(new URL(`geared_${crank}.step`, output), step);
+    const solids = kernel.getSubShapes(kernel.importStep(step), 'solid');
+    assert.equal(solids.length, 4);
+    // The plunger is the only solid of volume pi r^2 h = pi * 2.5^2 * 24. It starts on the frame top at z = 6 and is lifted.
+    const plunger = solids.find((solid) => Math.abs(kernel.getVolume(solid) - Math.PI * 2.5 ** 2 * 24) < 0.01)!;
+    const box = kernel.getBoundingBox(plunger);
+    near(box.zmin, 6 + lift, 1e-3);
+    near(box.zmax, 6 + lift + 24, 1e-3);
+    near(box.xmin, 79.5, 1e-6);
+  }
 });

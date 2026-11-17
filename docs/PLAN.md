@@ -17,7 +17,8 @@ Phases 1 and 2 come first, in that order. After them, phases 3 to 7 are independ
 - **Phase 1: done (17 November 2026).** Differences from the text below, so later phases read true: `BuiltModel.solids` is now `BuiltModel.entries` (each an exact solid or a faceted mesh, see `CachedSolid` in `build.ts`). `unsupported()` returns a descriptive reason, for example `hull`, `scale` or `cylinder with $fn`. `meshToSolid` in `solid.ts` uses `sew` and `makeSolid` per shell, not `sewAndSolidify` (F18). `summary.ts` holds the sentence about faceted parts. The tests are `test/mesh.test.ts` and `test/faceted.test.ts`.
 - **Phase 2: done (17 November 2026).** `partTag(name)` in `assembly.ts` is the hash. `nodeTag(node)` in `csg.ts` reads a render node's tag. `PartSpec` gained `inline` and `colorGiven`, and `file` is optional. A part wrapped in `translate()` or another operation is an error. The tests are the last six in `test/assembly.test.ts`.
 - **Phase 4: done (17 November 2026).** Differences from the text below: `scripts/fetch-libraries.mjs` fetches the pinned commit with `git`, not an archive link, because git reads work where `codeload.github.com` is refused. The zip holds 56 `.scad` files plus `LICENSE` (57 files, 1.22 MiB). `checkProject` now returns the library names a project includes. `ModelBuilder` takes a third argument, a `LibraryLoader`, and mounts only the libraries that project includes in every evaluation run (never in the mesh runs, which read a CSG dump). The worker's loader is `loadLibrary` in `geometry.worker.ts`; the tests use `test/libraries.ts`. A BOSL2 file name that does not exist is reported by name. `fflate` is now a runtime dependency, so its license joins `npm-licenses.txt`. Step 7 (fonts for `text()`) was not done: the owner's v3.3.1 views, `exploded` included, do not call `text()` in their default settings.
-- Phases 3 and 5 to 7: not started.
+- **Phase 3: done (17 November 2026).** Differences from the text below: follower values are not written into the pose (`toPose` skips followers). `placeParts` and `jointValues` derive them with `resolveFollowers`, so the preview, the sliders and the STEP export always agree with the driver and a stale value in a pose cannot disagree with it. `followerStates(assembly, pose)` gives the page each follower, its driver and its value. A hinge that follows another counts as turning without stops, so a 0 to 360 table wraps behind it (the roller behind the drum). More errors than the text lists: a follower that is a fixed joint, a driver that is a fixed joint or unknown, a joint that follows itself, a driver that closes a loop, and `ratio`, `offset` or `table` without `follow`. `parseEcho` reads tokens with a sticky pattern, because slicing a 5,000-row table made it quadratic. The example is `gearedExample.ts` ("Gears and a cam"). The tests are the last nine in `test/loops.test.ts`. `scripts/smoke.py` checks the two follower rows and that they change when the crank plays. A fractional `ratio` on a fully turning driver makes the follower jump at the wrap; the README says to use whole numbers.
+- Phases 5 to 7: not started.
 
 Phase 5 is the hardest. If a smaller model gets stuck there, hand that phase to a stronger one. Everything else is routine once the design below is followed.
 
@@ -71,7 +72,7 @@ kinematics.ts settles loops -> Viewport.tsx -> viewer.ts (WebGL) or softwarePrev
 |---|---|
 | `src/engine/protocol.ts` | Message and data types shared by page and worker. `CadError`. Size limits. |
 | `src/engine/scad.ts` | `checkProject` (source checks, returns the libraries a project includes), `evaluateScad` (one OpenSCAD run: files and mounted libraries in, CSG text + ECHO lines out). Appends the prelude to the entry file. `libraries` is the registry of bundled libraries (BOSL2). |
-| `src/engine/assembly.ts` | The prelude (`part()`, `joint()` as OpenSCAD modules that `echo` records), record reader and validation, `structureOf` (which joints carry parts, which close loops), matrices, `solvePose`. |
+| `src/engine/assembly.ts` | The prelude (`part()`, `joint()` as OpenSCAD modules that `echo` records), record reader and validation, `structureOf` (which joints carry parts, which close loops, which follow which), matrices, `resolveFollowers`, `followerStates`, `solvePose`. |
 | `src/engine/kinematics.ts` | Loop solver (Levenberg-Marquardt), `moveJoint`, `advanceJoint`, `settlePose`, `openingPose`, `loopStates`. Runs on the page, not in the worker. |
 | `src/engine/csg.ts` | Parser for OpenSCAD's CSG dump. Reads every node with its character range. `unsupported()` says which parts the exact builder cannot make. `taggedParts`, `childrenText`, `firstColor` serve inline parts. |
 | `src/engine/mesh.ts` | Pure TypeScript triangle meshes: binary STL reader, volume, bounds, and `toPartMesh` (flat-shaded triangles plus feature edges). |
@@ -81,9 +82,9 @@ kinematics.ts settles loops -> Viewport.tsx -> viewer.ts (WebGL) or softwarePrev
 | `src/engine/geometry.worker.ts`, `client.ts` | Worker entry and its page-side client (one job at a time, 60 s timeout, cancel). The worker also fetches and unzips a library the first time a build includes it. |
 | `scripts/fetch-libraries.mjs`, `public/engines/libraries/` | Rebuilds `BOSL2.zip` from a pinned commit (`npm run libraries`). The zip is committed. |
 | `src/components/viewer.ts`, `softwarePreview.ts` | three.js viewer, and a CPU renderer used when WebGL2 is missing. Both draw one mesh per part with a matrix. |
-| `src/components/Viewport.tsx` | Preview pane, joint sliders, play button, loop status. |
+| `src/components/Viewport.tsx` | Preview pane, joint sliders, play button, loop status, and a read-only row for each following joint. |
 | `src/App.tsx`, `project.ts`, `drafts.ts` | Shell: file tabs, run, export, open/save, autosave to IndexedDB. |
-| `src/examples.ts`, `assemblyExample.ts`, `linkageExample.ts` | Example projects. |
+| `src/examples.ts`, `assemblyExample.ts`, `linkageExample.ts`, `gearedExample.ts` | Example projects. |
 | `test/*.test.ts` | Node tests that run both WASM engines. `geometry` (single parts), `faceted` (meshed parts), `mesh` (pure functions), `assembly` (joints, inline parts, STEP round trip), `loops` (solver), `libraries` (BOSL2; `test/libraries.ts` reads the zip the way the worker fetches it). |
 
 ### The assembly language today
@@ -93,7 +94,8 @@ part(name, file, at = [0,0,0], rot = [0,0,0], color = undef);   // or part(name)
 joint(name, type = "fixed" | "hinge" | "slider", parent, child,
       at, rot,              // joint frame in the parent's coordinates
       child_at, child_rot,  // the same frame in the child's coordinates (default: child origin)
-      axis = [0,0,1], limits = [lo, hi], value);
+      axis = [0,0,1], limits = [lo, hi], value,
+      follow = "other_joint", ratio = 1, offset = 0, table = [[in, out], ...]);   // a following joint has no limits or value
 ```
 
 Joints are read in order. A joint that links two groups of parts not yet connected carries one from the other. A joint between already-connected parts closes a loop. Numbers cross from OpenSCAD to TypeScript as `[whole, millionths]` pairs (`_ps_n`), because `echo` prints only six significant digits.
@@ -129,7 +131,8 @@ These were run in Node against the engines in this repository (OpenSCAD `2025.03
 | F19 | `include <lib.scad>` followed by `part = "none";` in the entry file is silent under `--hardwarnings` and leaves an empty dump (`group();`). The recipe of phase 2 works as written. | `test/assembly.test.ts`, library fixture. |
 | F20 | The owner's v4 file included from an assembly with five inline parts (drum body, drum cap, spacer, drive plate, chute): one evaluation plus one mesh run per part, all faceted (`linear_extrude`). First build 0.7 s, unchanged rebuild 88 ms with one OpenSCAD run, editing a drum parameter rebuilds one part. STEP assembly 11.6 MiB in 6.2 s, five solids. | Scratch script, not in the repository. |
 
-| F21 | The owner's v3.3.1 file builds whole with BOSL2 mounted: one faceted part, 41,032 triangles, volume 833,318.3 mm³, 277 × 214 × 346 mm. Build 5.2 s (BOSL2 evaluation 3.4 s, mesh 1.7 s, two OpenSCAD runs). STEP export 32.9 s, 40.8 MiB, re-imports as 15 solids and 10,498 faces with volume 833,318.3. Views `exploded`, `gear_drum`, `gear_crank`, `crank_disk`, `rocker`, `handle` and `thumbscrew` all build (0.5 to 5.4 s). A BOSL2 `spur_gear(mod = 2, teeth = 20, thickness = 8)` is 1.2 s, volume 9,830.5 against a hand estimate of 9,800. **The 32.9 s export is more than half of the 60 s job limit on a cloud machine; a laptop two to three times slower would exceed it.** For v4, splitting into five inline parts cut the export from 20 s to 6.2 s (F18, F20). v3.3.1 has not been split and measured yet. | Scratch scripts, not in the repository. |
+| F21 | The owner's v3.3.1 file builds whole with BOSL2 mounted: one faceted part, 41,032 triangles, volume 833,318.3 mm³, 277 × 214 × 346 mm. Build 5.2 s (BOSL2 evaluation 3.4 s, mesh 1.7 s, two OpenSCAD runs). STEP export 32.9 s, 40.8 MiB, re-imports as 15 solids and 10,498 faces with volume 833,318.3. Views `exploded`, `gear_drum`, `gear_crank`, `crank_disk`, `rocker`, `handle` and `thumbscrew` all build (0.5 to 5.4 s). A BOSL2 `spur_gear(mod = 2, teeth = 20, thickness = 8)` is 1.2 s, volume 9,830.5 against a hand estimate of 9,800. **The 32.9 s export is more than half of the 60 s job limit on a cloud machine; a laptop two to three times slower would exceed it.** For v4, splitting into five inline parts cut the export from 20 s to 6.2 s (F18, F20). Splitting v3.3.1 into seven inline parts does not do that (F22). | Scratch scripts, not in the repository. |
+| F22 | The owner's v3.3.1 as a jointed assembly, written as a scratch file that includes it with `part = "none"`: seven inline parts (frame, tray, drum, crank, coupler, rocker, roller) and seven joints (the crank; the drum following the crank at ratio −2; the tray fixed; the crank pin, the chute shaft and the closing rocker pin of the four-bar; the roller following the drum through a 361-row table of the design's own `ff_roller_y`). Build 5.5 s, eight OpenSCAD runs, every part faceted, no warnings. The loop is closed at the opening pose (coupler −116.607°, rocker −7.136°). At crank 0, 37, 90, 180, 215, 270 and 359 degrees every part's world bounding box equals what OpenSCAD gives for the design's own `ff_assembly()` expressions at that crank angle, to within 0.0001 mm, with the loop shut each time. At 12.3, 101.7 and 333.3 degrees, where the drum angle falls between table rows, the roller is within 0.0065 mm. STEP export of the assembly at one pose: 37 to 38 s, 40.7 MiB, 20 solids, so **splitting v3.3.1 into parts does not shorten the export** (whole file: 32.9 s, F21). The 60 s limit is still the risk for this machine on a slower laptop. | Scratch scripts `v3_assembly.mjs` and `v3_assembly.scad`, not in the repository (the design file is the owner's). |
 
 ### Dump syntax by example
 
@@ -387,7 +390,7 @@ A part's shapes are taken as written in the assembly file's coordinates. The par
 
 ---
 
-## Phase 3. Driven joints: gear ratios and cam tables
+## Phase 3. Driven joints: gear ratios and cam tables (done)
 
 **Result for the user:** one joint can follow another. A gear pair is a ratio. A cam, or any motion given by a formula, is a table that OpenSCAD computes when the model is built.
 
@@ -442,8 +445,8 @@ A following joint has no slider. It shows its value, read only.
 
 ### Acceptance
 
-- [ ] Tests pass. New example plays smoothly in `scripts/smoke.py`.
-- [ ] Followers appear in the exported STEP at their resolved positions (extend the STEP round-trip test).
+- [x] Tests pass (58). The new example plays in `scripts/smoke.py`, normal and `--software`, and the script checks its two follower rows.
+- [x] Followers appear in the exported STEP at their resolved positions (the last test in `test/loops.test.ts`: crank 30 and 90 put the plunger 3 mm and 12 mm up).
 
 **Out of scope:** gear *contact* (teeth are not simulated; the ratio is stated), cams defined by contact between surfaces.
 
@@ -466,8 +469,8 @@ A following joint has no slider. It shows its value, read only.
 ### Acceptance
 
 - [x] Tests pass (49).
-- [x] The owner's `label_fan_folder.scad` (v3.3.1) opens and builds its `assembly` view as one faceted part. Measured in Node: 5.2 s with two OpenSCAD runs (F21). STEP export of the whole machine is 32.9 s (F21). Inline parts are the likely fix, as for v4, but it is not measured for v3.3.1.
-- [ ] With phases 2 and 3 done: an assembly file that includes the v3.3.1 file reproduces its motion. See the appendix for a starting point.
+- [x] The owner's `label_fan_folder.scad` (v3.3.1) opens and builds its `assembly` view as one faceted part. Measured in Node: 5.2 s with two OpenSCAD runs (F21). STEP export of the whole machine is 32.9 s (F21). Splitting it into inline parts does not shorten that (37 s, F22).
+- [x] With phases 2 and 3 done: an assembly file that includes the v3.3.1 file reproduces its motion, to 0.0001 mm at seven crank angles (F22). The owner keeps that file; the appendix is the starting sketch.
 
 ---
 
@@ -711,7 +714,7 @@ Drive the worker-side function directly with picks by index.
 
 ## Appendix. Starting point for the fan folder assembly
 
-This is a sketch for the acceptance checks of phases 2 to 4. **It has not been run.** It follows the positions in `ff_assembly()` of the v3.3.1 file. The names are that file's own. Expect to adjust signs and offsets once it is on screen: compare against the file's own `part = "assembly"` view at `crank_manual = 0`, 90, 180 and 270.
+This is a sketch for the acceptance checks of phases 2 to 4. It follows the positions in `ff_assembly()` of the v3.3.1 file, and the names are that file's own. It was run once (F22) with the two corrections below, which are applied to the code here, and with the extra parts listed after it. The owner keeps the full file, which is not committed because it is built on the owner's design.
 
 ```scad
 include <label_fan_folder.scad>
@@ -750,20 +753,21 @@ joint("drum", type = "hinge", parent = "frame", child = "drum",
       follow = "crank", ratio = -gear_ratio);                      // 2:1 gears, opposite sense
 
 joint("crank_pin", type = "hinge", parent = "crank", child = "coupler",
-      at = [crank_r, 0, z_coupler[0]]);
+      at = [crank_r, 0, z_coupler[0]], value = ff_ang(B_now - ff_A(th_pin)));   // starting guess: the coupler's angle at crank 0
 
 joint("chute", type = "hinge", parent = "frame", child = "rocker",
-      at = [O4[0], O4[1], 0], value = psi_mid);                    // starting guess for the loop
+      at = [O4[0], O4[1], 0], value = psi_now);                    // the rocker's angle at crank 0
 
 joint("rocker_pin", type = "hinge", parent = "coupler", child = "rocker",   // closes the four-bar
       at = [coupler_len, 0, 0], child_at = [rocker_len, 0, z_coupler[0]]);
 
 joint("roller", type = "slider", parent = "frame", child = "roller", axis = [0, 1, 0],
-      follow = "drum", table = [for (a = [0 : 2 : 360]) [a, ff_roller_y(a)]]);
+      follow = "drum", table = [for (a = [0 : 1 : 360]) [a, ff_roller_y(a)]]);
 ```
 
 Notes for whoever tries it:
 
+- The full version also holds the tray (its own part, a `fixed` joint to the frame), the guard and detent arm (in the frame), the spacers and detent wheel (with the drum), the knob and the crank pin (with the crank), the second pin and the chute stubs (with the rocker), and the roller's axle (with the roller). Each is placed with the same expression `ff_assembly()` uses, moved into its part's frame. Its roller table has 361 rows.
 - The design draws the machine in the XY plane and turns it upright with `rotate([90, 0, 0])` at the very end. The sketch leaves it flat. Add `rot = [90, 0, 0]` to `part("frame")` if an upright view is wanted.
 - `ff_roller_y` takes the drum angle with the design's sign (`drum_deg = -gear_ratio * crank_deg`). The table's input is the `drum` joint value, which has that same sign, and wraps over 360.
 - The design's gears are drawn already meshed at crank 0 (`spin_drum_gear`, `spin_crank_gear`), so no phase offset should be needed.

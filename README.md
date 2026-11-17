@@ -90,7 +90,24 @@ A closing joint has no slider. The joints around its loop move together to keep 
 
 In a loop, the first joint with a `value` is held when the model opens, and the `value` of any other joint is a starting guess. A guess picks between the forms a linkage can assemble in, such as open and crossed. If the links cannot reach each other, the build output names the closing joint and the gap that is left.
 
-Hinges, sliders and fixed joints can all close a loop, so slider-cranks and scissor mechanisms work the same way. Travel limits apply to the joints that have sliders and not to closing joints. Gears, cams, mates solved from faces, and collision checks are unavailable in this version. Open the **Crank-rocker linkage** example to watch a crank turn fully while its rocker swings.
+Hinges, sliders and fixed joints can all close a loop, so slider-cranks and scissor mechanisms work the same way. Travel limits apply to the joints that have sliders and not to closing joints. Mates solved from faces and collision checks are unavailable in this version. Open the **Crank-rocker linkage** example to watch a crank turn fully while its rocker swings.
+
+## Gears and cams
+
+A joint can follow another. Give it `follow` with the other joint's name. A gear pair is a `ratio`. A cam, or any motion that a formula gives, is a `table` of `[input, output]` rows that OpenSCAD computes when the model is built:
+
+```scad
+// The drum turns twice per crank turn, the other way round
+joint("drum", type = "hinge", parent = "frame", child = "drum", follow = "crank", ratio = -2);
+
+// The roller rides the drum: its height comes from the design's own function
+joint("roller", type = "slider", parent = "frame", child = "roller", axis = [0, 1, 0],
+      follow = "drum", table = [for (a = [0 : 1 : 360]) [a, roller_height(a)]]);
+```
+
+Without a table the follower's value is `offset + ratio × driver`, and `ratio` is 1 and `offset` is 0 when left out. With a table it is `offset + ratio × output`, where the output is read from the table in straight lines between rows. A table needs at least two rows and at most 5,000, and the inputs must increase from one row to the next. Past the first or last row the output stays at that row's value. The exception is a hinge that turns without end, one with no `limits` or one that follows another hinge. When the table's inputs run exactly 360 apart, such as 0 to 360, the driver's angle is wrapped into that range, so a cam goes round and round.
+
+A follower has no value of its own. It takes no `limits` and no `value`, and the page shows it as a read-only row under the sliders, naming the joint it follows. Followers can follow followers. The joint a follower follows can be part of a closed loop, so one crank can drive a four-bar and a gear train at once. A follower cannot be part of a loop itself. Use a whole-number `ratio` for a hinge that turns fully, because any other ratio makes the follower jump when the driver comes round to its start. Gear teeth are not simulated, so the ratio is the gear pair, and the teeth are drawn to mesh at the pose the model opens in. Open the **Gears and a cam** example.
 
 ## Geometry and precision
 
@@ -118,7 +135,7 @@ BOSL2 is bundled. Write `include <BOSL2/std.scad>` and, for example, `include <B
 
 ## Validate
 
-`npm run check` checks TypeScript. `npm test` runs both WASM kernels against the example parts and the example assembly, writes STEP fixtures in `.test-output/`, and exercises failure cases. The assembly test reads the exported STEP back and compares every part's position with the pose solved for the preview. The loop tests turn a crank-rocker through a full revolution and compare the rocker's swing and a slider-crank's piston position with their closed-form values. The fixture test checks previews, dimensions, volume, units, analytic surfaces and parameter regeneration. Run `test/verify_in_freecad.py` with a Python environment where FreeCAD's `FreeCAD` and `Part` modules can be imported to check the exports independently in FreeCAD.
+`npm run check` checks TypeScript. `npm test` runs both WASM kernels against the example parts and the example assembly, writes STEP fixtures in `.test-output/`, and exercises failure cases. The assembly test reads the exported STEP back and compares every part's position with the pose solved for the preview. The loop tests turn a crank-rocker through a full revolution and compare the rocker's swing and a slider-crank's piston position with their closed-form values. The follower tests check a ratio, a table read between rows, a table that wraps, a chain of followers and a gear wheel that follows the crank of a closed linkage through a full turn, and read the exported STEP back to see each follower where its formula puts it. The fixture test checks previews, dimensions, volume, units, analytic surfaces and parameter regeneration. Run `test/verify_in_freecad.py` with a Python environment where FreeCAD's `FreeCAD` and `Part` modules can be imported to check the exports independently in FreeCAD.
 
 ## License
 

@@ -171,14 +171,15 @@ function toPose(assembly: AssemblySpec, values: number[], base: Pose): Pose {
   const { closures } = structureOf(assembly);
   const pose = { ...base };
   assembly.joints.forEach((joint, j) => {
-    if (joint.type !== 'fixed' && !closures.includes(j)) pose[joint.name] = clampJoint(joint, values[j]);
+    // A following joint has no value in the pose: it is worked out from its driver wherever parts are placed.
+    if (joint.type !== 'fixed' && !joint.follow && !closures.includes(j)) pose[joint.name] = clampJoint(joint, values[j]);
   });
   return pose;
 }
 
 function loopJoints(assembly: AssemblySpec, except: number[] = []) {
   const { looped } = structureOf(assembly);
-  return assembly.joints.flatMap((joint, j) => (looped[j] && joint.type !== 'fixed' && !except.includes(j) ? [j] : []));
+  return assembly.joints.flatMap((joint, j) => (looped[j] && joint.type !== 'fixed' && !joint.follow && !except.includes(j) ? [j] : []));
 }
 
 export function hasLoops(assembly: AssemblySpec) {
@@ -232,7 +233,8 @@ export function openingPose(assembly: AssemblySpec) {
 export function moveJoint(assembly: AssemblySpec, pose: Pose, name: string, target: number): { pose: Pose; reached: boolean } {
   const j = assembly.joints.findIndex((joint) => joint.name === name);
   const joint = assembly.joints[j];
-  if (!joint || joint.type === 'fixed') return { pose, reached: false };
+  // A following joint is moved by moving the joint it follows.
+  if (!joint || joint.type === 'fixed' || joint.follow) return { pose, reached: false };
   const { looped, closures } = structureOf(assembly);
   if (closures.includes(j)) return { pose, reached: false };
   const goal = Math.min(joint.limits[1], Math.max(joint.limits[0], target));
@@ -268,7 +270,7 @@ export function moveJoint(assembly: AssemblySpec, pose: Pose, name: string, targ
  */
 export function advanceJoint(assembly: AssemblySpec, pose: Pose, name: string, amount: number): { pose: Pose; reached: boolean } {
   const joint = assembly.joints.find((item) => item.name === name);
-  if (!joint) return { pose, reached: false };
+  if (!joint || joint.follow) return { pose, reached: false };
   const [low, high] = joint.limits;
   let current = clampJoint(joint, pose[name]);
   let remaining = amount;

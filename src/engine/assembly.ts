@@ -11,13 +11,14 @@ import { CadError, type Pose, type Vec3 } from './protocol.ts';
 export const assemblyPrelude = `
 function _ps_n(x) = is_num(x) ? [floor(x), round((x - floor(x)) * 1000000)] : x;
 function _ps_v(v) = is_list(v) ? [for (x = v) _ps_n(x)] : v;
+function _ps_t(t) = is_list(t) ? [for (row = t) _ps_v(row)] : t;
 function _ps_hash(s, i = 0, a = 7) = i >= len(s) ? a : _ps_hash(s, i + 1, (a * 31 + ord(s[i])) % 99991);
 module part(name = undef, file = undef, at = [0, 0, 0], rot = [0, 0, 0], color = undef) {
     echo(["@partscript", "part", name, file, _ps_v(at), _ps_v(rot), _ps_v(color), $children]);
     if ($children > 0) render(convexity = 900000 + _ps_hash(is_string(name) ? name : "")) children();
 }
-module joint(name = undef, type = "fixed", parent = undef, child = undef, at = [0, 0, 0], rot = [0, 0, 0], axis = [0, 0, 1], limits = undef, value = undef, child_at = [0, 0, 0], child_rot = [0, 0, 0]) {
-    echo(["@partscript", "joint", name, type, parent, child, _ps_v(at), _ps_v(rot), _ps_v(axis), _ps_v(limits), _ps_n(value), _ps_v(child_at), _ps_v(child_rot)]);
+module joint(name = undef, type = "fixed", parent = undef, child = undef, at = [0, 0, 0], rot = [0, 0, 0], axis = [0, 0, 1], limits = undef, value = undef, child_at = [0, 0, 0], child_rot = [0, 0, 0], follow = undef, ratio = undef, offset = undef, table = undef) {
+    echo(["@partscript", "joint", name, type, parent, child, _ps_v(at), _ps_v(rot), _ps_v(axis), _ps_v(limits), _ps_n(value), _ps_v(child_at), _ps_v(child_rot), follow, _ps_n(ratio), _ps_n(offset), _ps_t(table)]);
 }
 `;
 
@@ -73,6 +74,12 @@ export interface JointSpec {
   value: number;
   /** True when the code set value. In a loop the first such joint is held and the others are starting guesses. */
   given: boolean;
+  /**
+   * Set when this joint takes its value from another joint instead of having one of its own.
+   * Without a table the value is offset + ratio × the driver's value. With a table, the
+   * driver's value is looked up in it first (linear between rows).
+   */
+  follow?: { joint: string; ratio: number; offset: number; table?: [number, number][] };
 }
 
 export interface AssemblySpec {
@@ -81,6 +88,7 @@ export interface AssemblySpec {
 }
 
 const maxParts = 200;
+const maxTableRows = 5_000;
 const maxCoordinate = 1_000_000;
 const namePattern = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
 export const fileNamePattern = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}\.scad$/;
@@ -92,6 +100,8 @@ export const palette: Color[] = [
 ];
 
 type Value = number | boolean | string | null | Value[];
+
+const tokenPattern = /[A-Za-z0-9_.+-]+/y;
 
 /** Read one value in the notation OpenSCAD's echo() prints. */
 function parseEcho(text: string): Value {
@@ -131,7 +141,8 @@ function parseEcho(text: string): Value {
       offset++;
       return result;
     }
-    const word = /^[A-Za-z0-9_.+-]+/.exec(text.slice(offset))?.[0];
+    tokenPattern.lastIndex = offset;
+    const word = tokenPattern.exec(text)?.[0];
     if (!word) throw new Error('token');
     offset += word.length;
     if (word === 'true') return true;
@@ -185,6 +196,36 @@ function color(value: Value, what: string, index: number): Color {
   return rgb as Color;
 }
 
+/** The follow, ratio, offset and table arguments of one joint(), checked. Undefined when the joint follows nothing. */
+function readFollow(name: Value, ratio: Value, offset: Value, table: Value, what: string): JointSpec['follow'] {
+  if (name === null) {
+    if (ratio !== null || offset !== null || table !== null) fail(what, 'ratio, offset and table only work with follow = "name of another joint".');
+    return undefined;
+  }
+  const joint = text(name, what, 'joint name to follow');
+  const result: NonNullable<JointSpec['follow']> = {
+    joint,
+    ratio: ratio === null ? 1 : number(ratio, what, 'ratio'),
+    offset: offset === null ? 0 : number(offset, what, 'offset'),
+  };
+  if (table === null) return result;
+  if (!Array.isArray(table) || table.length < 2) {
+    fail(what, 'table needs at least two rows, each [input, output], for example table = [[0, 0], [90, 10]].');
+  }
+  if (table.length > maxTableRows) fail(what, `table has ${table.length} rows. Use at most ${maxTableRows.toLocaleString('en-US')}.`);
+  const rows = table.map((row, i) => {
+    if (!Array.isArray(row) || row.length !== 2) fail(what, `table row ${i + 1} must be [input, output].`);
+    return [number(row[0], what, `table row ${i + 1} input`), number(row[1], what, `table row ${i + 1} output`)] as [number, number];
+  });
+  rows.forEach((row, i) => {
+    if (i > 0 && row[0] <= rows[i - 1][0]) {
+      fail(what, `table inputs must increase, but row ${i + 1} (${row[0]}) does not come after row ${i} (${rows[i - 1][0]}).`);
+    }
+  });
+  result.table = rows;
+  return result;
+}
+
 /** Turn the records printed by part() and joint() into a checked assembly. */
 export function readAssembly(records: string[]): AssemblySpec {
   const parts: PartSpec[] = [];
@@ -236,21 +277,28 @@ export function readAssembly(records: string[]): AssemblySpec {
       const childAt = vector(fields[11], what, 'child_at') as Vec3;
       const childRot = vector(fields[12], what, 'child_rot') as Vec3;
 
+      const follow = readFollow(fields[13] ?? null, fields[14] ?? null, fields[15] ?? null, fields[16] ?? null, what);
       let limits: [number, number] = type === 'hinge' ? [-180, 180] : [0, 0];
-      if (fields[9] !== null) {
-        if (type === 'fixed') fail(what, 'a fixed joint does not move. Remove limits or change the type.');
-        limits = vector(fields[9], what, 'limits', 2) as [number, number];
-        if (limits[0] > limits[1]) fail(what, 'limits must be [lowest, highest].');
-      } else if (type === 'slider') {
-        fail(what, 'a slider needs limits in millimetres, for example limits = [0, 40].');
+      let value = 0;
+      if (follow) {
+        if (type === 'fixed') fail(what, 'a fixed joint does not move, so it cannot follow another joint.');
+        if (fields[9] !== null || fields[10] !== null) fail(what, 'a joint that follows another takes its value from it. Remove limits and value.');
+      } else {
+        if (fields[9] !== null) {
+          if (type === 'fixed') fail(what, 'a fixed joint does not move. Remove limits or change the type.');
+          limits = vector(fields[9], what, 'limits', 2) as [number, number];
+          if (limits[0] > limits[1]) fail(what, 'limits must be [lowest, highest].');
+        } else if (type === 'slider') {
+          fail(what, 'a slider needs limits in millimetres, for example limits = [0, 40].');
+        }
+        value = Math.min(Math.max(0, limits[0]), limits[1]);
+        if (fields[10] !== null) {
+          if (type === 'fixed') fail(what, 'a fixed joint does not move. Remove value or change the type.');
+          value = number(fields[10], what, 'value');
+          if (value < limits[0] - 1e-9 || value > limits[1] + 1e-9) fail(what, `value ${value} is outside limits [${limits[0]}, ${limits[1]}].`);
+        }
       }
-      let value = Math.min(Math.max(0, limits[0]), limits[1]);
-      if (fields[10] !== null) {
-        if (type === 'fixed') fail(what, 'a fixed joint does not move. Remove value or change the type.');
-        value = number(fields[10], what, 'value');
-        if (value < limits[0] - 1e-9 || value > limits[1] + 1e-9) fail(what, `value ${value} is outside limits [${limits[0]}, ${limits[1]}].`);
-      }
-      joints.push({ name, type, parent, child, at, rot, childAt, childRot, axis, limits, value, given: fields[10] !== null });
+      joints.push({ name, type, parent, child, at, rot, childAt, childRot, axis, limits, value, given: fields[10] !== null, follow });
     }
   }
 
@@ -262,14 +310,48 @@ export function readAssembly(records: string[]): AssemblySpec {
     if (!names.has(item.child)) fail(what, `child "${item.child}" is not a part. Declare it with part().`);
     if (item.parent === item.child) fail(what, 'parent and child must be different parts.');
   }
+  checkFollowers(joints);
   const assembly = { parts, joints };
-  const { carrier } = structureOf(assembly);
+  const { carrier, closures, looped } = structureOf(assembly);
+  joints.forEach((joint, j) => {
+    if (!joint.follow) return;
+    if (closures.includes(j) || looped[j]) {
+      throw new CadError(`joint("${joint.name}") follows another joint, so it cannot be part of a closed loop. Let the joints of the loop move on their own, and have a joint outside the loop follow one of them.`);
+    }
+    const driver = joints.findIndex((item) => item.name === joint.follow!.joint);
+    if (closures.includes(driver)) {
+      fail(`joint("${joint.name}")`, `follows "${joint.follow.joint}", which closes a loop and has no value of its own. Follow a joint that carries a part.`);
+    }
+  });
   parts.forEach((part, i) => {
     if (carrier[i] >= 0 && placed.has(part.name)) {
       fail(`joint("${joints[carrier[i]].name}")`, `"${part.name}" also has at or rot on its part() line. Place it with the joint's at and rot.`);
     }
   });
   return assembly;
+}
+
+/** Every followed joint exists, can move, and no chain of follows comes back to where it started. */
+function checkFollowers(joints: JointSpec[]) {
+  const index = new Map(joints.map((joint, j) => [joint.name, j]));
+  joints.forEach((joint, j) => {
+    if (!joint.follow) return;
+    const what = `joint("${joint.name}")`;
+    const driver = index.get(joint.follow.joint);
+    if (driver === undefined) fail(what, `follows "${joint.follow.joint}", which is not a joint. Check the name.`);
+    if (driver === j) fail(what, 'a joint cannot follow itself.');
+    if (joints[driver].type === 'fixed') fail(what, `follows "${joint.follow.joint}", which is a fixed joint and never moves.`);
+  });
+  joints.forEach((joint, j) => {
+    const path = [j];
+    let at = j;
+    while (joints[at].follow) {
+      at = index.get(joints[at].follow!.joint)!;
+      if (at === j) fail(`joint("${joint.name}")`, `the follow links go in a circle (${[...path, j].map((i) => joints[i].name).join(' → ')}). Remove one of them.`);
+      if (path.includes(at)) break;
+      path.push(at);
+    }
+  });
 }
 
 /** A single part file is shown and exported as an assembly of one part. */
@@ -325,6 +407,8 @@ export function turnsFully(joint: JointSpec) {
 
 export function clampJoint(joint: JointSpec, value: number | undefined) {
   if (joint.type === 'fixed') return 0;
+  // A following joint is never clamped: its value is worked out from its driver.
+  if (joint.follow) return typeof value === 'number' && Number.isFinite(value) ? value : 0;
   if (typeof value !== 'number' || !Number.isFinite(value)) return joint.value;
   const [low, high] = joint.limits;
   if (value >= low && value <= high) return value;
@@ -356,6 +440,10 @@ export interface Structure {
   frames: { parent: Matrix; child: Matrix; parentInverse: Matrix; childInverse: Matrix }[];
   /** Typical size of the mechanism in mm. It makes angle errors comparable with distances. */
   scale: number;
+  /** For each joint, the joint it follows, or -1. */
+  drivers: number[];
+  /** Following joints, each after the joint it follows. */
+  followOrder: number[];
 }
 
 const structures = new WeakMap<AssemblySpec, Structure>();
@@ -439,7 +527,21 @@ export function structureOf(assembly: AssemblySpec): Structure {
     return { parent, child, parentInverse: invert(parent), childInverse: invert(child) };
   });
   const reach = joints.flatMap((joint) => [Math.hypot(...joint.at), Math.hypot(...joint.childAt)]);
-  const result = { roots, edges, carrier, closures, cycles, looped, frames, scale: Math.max(10, ...reach) };
+
+  const jointIndex = new Map(joints.map((joint, j) => [joint.name, j]));
+  const drivers = joints.map((joint) => (joint.follow ? jointIndex.get(joint.follow.joint) ?? -1 : -1));
+  const followOrder: number[] = [];
+  const state = joints.map(() => 0);
+  const visit = (j: number) => {
+    if (state[j]) return;
+    state[j] = 1;
+    if (drivers[j] >= 0) visit(drivers[j]);
+    state[j] = 2;
+    if (joints[j].follow) followOrder.push(j);
+  };
+  joints.forEach((_, j) => visit(j));
+
+  const result = { roots, edges, carrier, closures, cycles, looped, frames, scale: Math.max(10, ...reach), drivers, followOrder };
   structures.set(assembly, result);
   return result;
 }
@@ -451,9 +553,50 @@ export function jointMotion(joint: JointSpec, value: number): Matrix {
   return identity;
 }
 
+/** Value of the table at an input inside its range, by linear interpolation between rows. */
+function lookup(table: [number, number][], input: number) {
+  let low = 0;
+  let high = table.length - 1;
+  while (high - low > 1) {
+    const middle = (low + high) >> 1;
+    if (table[middle][0] <= input) low = middle;
+    else high = middle;
+  }
+  const [x0, y0] = table[low];
+  const [x1, y1] = table[high];
+  return y0 + (y1 - y0) * ((input - x0) / (x1 - x0));
+}
+
+/** True when a joint can turn without end: a hinge with no stops, or one that follows another. */
+function turnsWithoutStops(joint: JointSpec) {
+  return joint.type === 'hinge' && (joint.follow ? true : turnsFully(joint));
+}
+
+/** The value a following joint takes when its driver is at `input`. */
+function followValue(joint: JointSpec, driver: JointSpec, input: number) {
+  const { ratio, offset, table } = joint.follow!;
+  if (!table) return offset + ratio * input;
+  const first = table[0][0];
+  const last = table[table.length - 1][0];
+  let at = input;
+  if (Math.abs(last - first - 360) < 1e-6 && turnsWithoutStops(driver)) at = first + ((((input - first) % 360) + 360) % 360);
+  else at = Math.min(last, Math.max(first, input));
+  return offset + ratio * lookup(table, at);
+}
+
+/** Fill in the value of every following joint from the joint it follows. Returns a new list. */
+export function resolveFollowers(assembly: AssemblySpec, values: number[]): number[] {
+  const { followOrder, drivers } = structureOf(assembly);
+  if (!followOrder.length) return values;
+  const resolved = [...values];
+  for (const j of followOrder) resolved[j] = followValue(assembly.joints[j], assembly.joints[drivers[j]], resolved[drivers[j]]);
+  return resolved;
+}
+
 /** World transform of every part for one value per joint. Values of closing joints are not used. */
-export function placeParts(assembly: AssemblySpec, values: number[]): Matrix[] {
+export function placeParts(assembly: AssemblySpec, rawValues: number[]): Matrix[] {
   const { roots, edges, frames } = structureOf(assembly);
+  const values = resolveFollowers(assembly, rawValues);
   const world = new Array<Matrix>(assembly.parts.length);
   for (const root of roots) world[root] = placement(assembly.parts[root].at, assembly.parts[root].rot);
   for (const edge of edges) {
@@ -467,14 +610,22 @@ export function placeParts(assembly: AssemblySpec, values: number[]): Matrix[] {
   return world;
 }
 
+/** One value per joint: the pose's value for a free joint, and the worked-out value for a following one. */
 export function jointValues(assembly: AssemblySpec, pose: Pose = {}) {
-  return assembly.joints.map((joint) => clampJoint(joint, pose[joint.name]));
+  return resolveFollowers(assembly, assembly.joints.map((joint) => (joint.follow ? 0 : clampJoint(joint, pose[joint.name]))));
 }
 
-/** The joints that have a value to set: every moving joint that carries a part. */
+/** The joints that have a value to set: every moving joint that carries a part, except those that follow another. */
 export function movingJoints(assembly: AssemblySpec) {
   const { closures } = structureOf(assembly);
-  return assembly.joints.filter((joint, j) => joint.type !== 'fixed' && !closures.includes(j));
+  return assembly.joints.filter((joint, j) => joint.type !== 'fixed' && !joint.follow && !closures.includes(j));
+}
+
+/** The joints that follow another, with the joint they follow and the value they have in this pose. */
+export function followerStates(assembly: AssemblySpec, pose: Pose = {}) {
+  const { drivers } = structureOf(assembly);
+  const values = jointValues(assembly, pose);
+  return assembly.joints.flatMap((joint, j) => (joint.follow ? [{ joint, driver: assembly.joints[drivers[j]], value: values[j] }] : []));
 }
 
 export function defaultPose(assembly: AssemblySpec): Pose {
