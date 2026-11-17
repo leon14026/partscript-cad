@@ -3,7 +3,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import test, { after } from 'node:test';
 import { OcctKernel } from 'occt-wasm';
 import { ModelBuilder } from '../src/engine/build.ts';
-import type { OpenScadFactory } from '../src/engine/scad.ts';
+import { renderMesh, type OpenScadFactory } from '../src/engine/scad.ts';
+import { meshVolume, parseBinaryStl } from '../src/engine/mesh.ts';
 import { facetedText } from '../src/engine/summary.ts';
 import { exampleProjects } from '../src/examples.ts';
 
@@ -42,22 +43,22 @@ async function build(source: string, name: string, bodies = 1) {
   return { mesh, step, model };
 }
 
-const hexagon = (r: number) => 3 * r * r * Math.sin(Math.PI / 3);
 const polygon = (n: number, r: number) => (n / 2) * r * r * Math.sin((2 * Math.PI) / n);
 
-test('an extruded square is faceted with volume 60', async () => {
-  const { mesh } = await build('linear_extrude(5) square([4, 3]);', 'faceted_extrude');
+test('a tapered extrusion is faceted with the volume of a frustum', async () => {
+  // The top is the 4 x 3 base scaled by 0.5 about the origin: h/3 (A1 + A2 + sqrt(A1 A2)) = 5/3 (12 + 3 + 6).
+  const { mesh } = await build('linear_extrude(height = 5, scale = 0.5) square([4, 3]);', 'faceted_extrude');
   assert.equal(mesh.quality, 'faceted');
-  assert.equal(mesh.reason, 'linear_extrude');
-  near(mesh.volume, 60);
+  assert.equal(mesh.reason, 'linear_extrude with scale');
+  near(mesh.volume, 35);
   assert.deepEqual(mesh.bounds, { min: [0, 0, 0], max: [4, 3, 5] });
   assert.ok(mesh.edgeSegments.length / 6 >= 12);
 });
 
-test('an extruded pentagon with a 24-sided hole has the polygon areas times the height', async () => {
+test('an extruded pentagon with a 24-sided hole is exact, with the polygon areas times the height', async () => {
   const source = 'linear_extrude(4) difference() { circle(r = 10, $fn = 5); circle(d = 3, $fn = 24); }';
-  const { mesh } = await build(source, 'faceted_ring');
-  assert.equal(mesh.quality, 'faceted');
+  const { mesh } = await build(source, 'exact_ring');
+  assert.equal(mesh.quality, 'exact');
   near(mesh.volume, 4 * (polygon(5, 10) - polygon(24, 1.5)));
 });
 
@@ -76,16 +77,19 @@ test('hull, rotate_extrude and polyhedron build with the volumes worked out by h
   near(tetra.mesh.volume, 1 / 6);
 });
 
-test('scale and a $fn cylinder are faceted, with the reason named', async () => {
-  const scaled = await build('scale([1, 2, 3]) cube(1);', 'faceted_scale');
-  assert.equal(scaled.mesh.quality, 'faceted');
-  assert.equal(scaled.mesh.reason, 'scale');
-  near(scaled.mesh.volume, 6);
+test('a sheared box and a cone with $fn are faceted, with the reason named', async () => {
+  // A shear keeps the volume of the cube: 4 x 4 x 4.
+  const sheared = await build('multmatrix([[1, 0.3, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]) cube(4);', 'faceted_shear');
+  assert.equal(sheared.mesh.quality, 'faceted');
+  assert.equal(sheared.mesh.reason, 'multmatrix');
+  near(sheared.mesh.volume, 64);
 
-  const nut = await build('cylinder(h = 5, d = 12, $fn = 6);', 'faceted_hexagon');
-  assert.equal(nut.mesh.reason, 'cylinder with $fn');
-  near(nut.mesh.volume, 5 * hexagon(6));
-  assert.ok(!nut.step.includes('CYLINDRICAL_SURFACE'), 'six flats, no true cylinder');
+  // An octagonal frustum: area 2 sqrt(2) r^2 at each end, 5/3 (A1 + A2 + sqrt(A1 A2)).
+  const [a1, a2] = [3, 2].map((r) => 2 * Math.SQRT2 * r * r);
+  const cone = await build('cylinder(h = 5, r1 = 3, r2 = 2, $fn = 8);', 'faceted_cone');
+  assert.equal(cone.mesh.reason, 'cylinder with $fn');
+  near(cone.mesh.volume, (5 / 3) * (a1 + a2 + Math.sqrt(a1 * a2)));
+  assert.ok(!cone.step.includes('CYLINDRICAL_SURFACE'), 'eight flats, no true cylinder');
 });
 
 test('smooth shapes stay exact at any $fa and $fs, and several bodies in one part are kept', async () => {
@@ -121,18 +125,18 @@ test('a file that draws only 2D shapes is told to extrude, and an empty result i
 test('an assembly of one exact and one faceted part exports both', async () => {
   const files = {
     'block.scad': 'cube([10, 10, 10]);',
-    'nut.scad': 'cylinder(h = 5, d = 12, $fn = 6);',
-    'main.scad': 'part("block", "block.scad"); part("nut", "nut.scad"); joint("seat", parent = "block", child = "nut", at = [5, 5, 10]);',
+    'bar.scad': 'hull() { cube(2); translate([4, 0, 0]) cube(2); }',
+    'main.scad': 'part("block", "block.scad"); part("bar", "bar.scad"); joint("seat", parent = "block", child = "bar", at = [2, 5, 10]);',
   };
   const model = await builder.build(files, 'main.scad');
   assert.deepEqual(model.preview.meshes.map((mesh) => mesh.quality), ['exact', 'faceted']);
-  assert.equal(facetedText(model.preview), '1 part is faceted (nut.scad uses cylinder with $fn).');
+  assert.equal(facetedText(model.preview), '1 part is faceted (bar.scad uses hull).');
   const step = new TextDecoder().decode(builder.exportStep(model));
   assert.equal(step.match(/NEXT_ASSEMBLY_USAGE_OCCURRENCE\s*\(/g)?.length, 2);
   const mark = kernel.checkpoint();
   const shape = kernel.importStep(step);
   assert.equal(kernel.subShapeCount(shape, 'solid'), 2);
-  near(kernel.getVolume(shape), 1000 + 5 * hexagon(6), 1e-3);
+  near(kernel.getVolume(shape), 1000 + 24, 1e-3);
   kernel.releaseSince(mark);
 });
 
@@ -140,14 +144,14 @@ test('the summary lists at most three files and counts the rest', async () => {
   const part = (file: string) => `part("${file.replace('.scad', '')}", "${file}");`;
   const files: Record<string, string> = {
     'a.scad': 'hull() { cube(1); translate([2, 0, 0]) cube(1); }',
-    'b.scad': 'scale([2, 1, 1]) cube(1);',
-    'c.scad': 'linear_extrude(1) square(2);',
-    'd.scad': 'cylinder(h = 1, d = 3, $fn = 5);',
+    'b.scad': 'multmatrix([[1, 0.3, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]) cube(1);',
+    'c.scad': 'linear_extrude(1, twist = 10) square(2);',
+    'd.scad': 'sphere(2, $fn = 8);',
     'main.scad': ['a.scad', 'b.scad', 'c.scad', 'd.scad'].map(part).join('\n'),
   };
   const model = await builder.build(files, 'main.scad');
   assert.equal(facetedText(model.preview),
-    '4 parts are faceted (a.scad uses hull, b.scad uses scale, c.scad uses linear_extrude, and 1 more).');
+    '4 parts are faceted (a.scad uses hull, b.scad uses multmatrix, c.scad uses linear_extrude with twist, and 1 more).');
   const alone = await builder.build(files, 'a.scad');
   assert.equal(facetedText(alone.preview), 'This solid is faceted because it uses hull, so STEP has flat faces.');
 });
@@ -168,4 +172,12 @@ test('a faceted part is meshed once, then reused from the cache', async () => {
   const again = await builder.build(source, 'design.scad');
   assert.equal(again.preview.rebuilt, 0);
   assert.equal(engineRuns - runs, 1, 'only the evaluation of the file runs, not the mesh');
+});
+
+test('a dump nested hundreds of groups deep still meshes, as BOSL2 parts are dumped', async () => {
+  // BOSL2 wraps each part in many groups. OpenSCAD takes a level of stack for each, and a browser worker has about 1 MB.
+  const depth = 600;
+  const dump = `${'group() {\n'.repeat(depth)}cube(size = [2, 3, 4], center = false);\n${'}\n'.repeat(depth)}`;
+  const stl = await renderMesh(dump, openScad);
+  near(meshVolume(parseBinaryStl(stl)), 24);
 });

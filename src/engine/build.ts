@@ -1,10 +1,17 @@
 import type { OcctKernel, ShapeHandle } from 'occt-wasm';
 import { partTag, readAssembly, singlePart, solvePose, type AssemblySpec, type Color } from './assembly.ts';
-import { childrenText, firstColor, hasShapes, parseCsg, taggedParts, unsupported, type CsgNode } from './csg.ts';
-import { maxTriangles, meshVolume, parseBinaryStl, toPartMesh } from './mesh.ts';
+import { childrenText, firstColor, hasShapes, needsCheck, parseCsg, taggedParts, unsupported, type CsgNode } from './csg.ts';
+import { maxTriangles, meshBounds, meshVolume, parseBinaryStl, toPartMesh } from './mesh.ts';
 import { CadError, type BuildStage, type ModelPreview, type PartMesh, type Pose, type ProjectFiles } from './protocol.ts';
 import { checkProject, evaluateScad, renderMesh, type Evaluation, type LibraryFiles, type LibraryLoader, type OpenScadFactory } from './scad.ts';
 import { buildSolid, meshToSolid, previewSolid, writeAssemblyStep } from './solid.ts';
+
+/** Why a part is faceted when its exact build disagreed with OpenSCAD. It reads after "uses". */
+export const mismatchReason = "an exact build that did not match OpenSCAD's mesh";
+
+/** Every `$fn = 0, $fa = X, $fs = Y` in a dump, which a finer mesh replaces. */
+const smoothSettings = /\$fn = 0, \$fa = [^,)]+, \$fs = [^,)]+/g;
+const fineMeshLimit = 400_000;
 
 /**
  * A built part. An exact part is an OpenCascade solid made from boxes, cylinders,
@@ -59,13 +66,18 @@ export class ModelBuilder {
   #kernel: OcctKernel;
   #createOpenScad: OpenScadFactory;
   #loadLibrary?: LibraryLoader;
+  #buildExact: typeof buildSolid;
   #cache = new Map<string, CachedSolid>();
 
-  /** `loadLibrary` fetches a library such as BOSL2 when a project includes it. Without one, libraries are unavailable. */
-  constructor(kernel: OcctKernel, createOpenScad: OpenScadFactory, loadLibrary?: LibraryLoader) {
+  /**
+   * `loadLibrary` fetches a library such as BOSL2 when a project includes it. Without one, libraries are unavailable.
+   * `buildExact` makes the exact solid of a tree. Only the tests pass one, to check what happens when it is wrong.
+   */
+  constructor(kernel: OcctKernel, createOpenScad: OpenScadFactory, loadLibrary?: LibraryLoader, buildExact: typeof buildSolid = buildSolid) {
     this.#kernel = kernel;
     this.#createOpenScad = createOpenScad;
     this.#loadLibrary = loadLibrary;
+    this.#buildExact = buildExact;
   }
 
   /** Fetch the libraries a project includes. Only those are mounted, so other projects stay fast. */
@@ -78,6 +90,49 @@ export class ModelBuilder {
     return mounted;
   }
 
+  /** The exact solid of a tree that unsupported() accepted. */
+  #exact(nodes: CsgNode[]): Extract<CachedSolid, { kind: 'exact' }> {
+    const kernel = this.#kernel;
+    const mark = kernel.checkpoint();
+    let brep: Uint8Array;
+    let mesh: PartMesh;
+    try {
+      const { shape, volume } = this.#buildExact(kernel, nodes);
+      mesh = { ...previewSolid(kernel, shape), volume, quality: 'exact' };
+      brep = kernel.toBREPBinary(shape);
+    } finally {
+      // Boolean operations leave many intermediate shapes. Keep only the result.
+      kernel.releaseSince(mark);
+    }
+    return { kind: 'exact', shape: kernel.fromBREPBinary(brep), mesh };
+  }
+
+  /**
+   * Compare an exact part with OpenSCAD's mesh of the same shapes: volume within
+   * 0.3% and every bounding-box number within 0.05 mm. The mesh is made finer than
+   * the part's own facet settings so curves are close to true. A very large fine
+   * mesh is skipped for the part's own, with 2% and 0.5 mm.
+   */
+  async #agrees(csg: string, exact: PartMesh) {
+    let stl = await renderMesh(csg.replace(smoothSettings, '$fn = 0, $fa = 1, $fs = 0.05'), this.#createOpenScad);
+    let loose = false;
+    if (new DataView(stl.buffer, stl.byteOffset, stl.byteLength).getUint32(80, true) > fineMeshLimit) {
+      stl = await renderMesh(csg, this.#createOpenScad);
+      loose = true;
+    }
+    const soup = parseBinaryStl(stl);
+    const volume = meshVolume(soup);
+    const { min, max } = meshBounds(soup);
+    const relative = loose ? 0.02 : 0.003;
+    const millimetres = loose ? 0.5 : 0.05;
+    const sameVolume = Math.abs(exact.volume - volume) <= relative * Math.abs(volume);
+    const sameBox = [0, 1, 2].every((k) => Math.abs(exact.bounds.min[k] - min[k]) <= millimetres && Math.abs(exact.bounds.max[k] - max[k]) <= millimetres);
+    if (!sameVolume || !sameBox) {
+      console.warn(`The exact build has volume ${exact.volume} and the OpenSCAD mesh ${volume}. Bounds ${JSON.stringify(exact.bounds)} against ${JSON.stringify({ min, max })}.`);
+    }
+    return sameVolume && sameBox;
+  }
+
   /** Build the solid for one part's shapes. `context` names an inline part in error messages. */
   async #solid(csg: string, file: string, context?: string): Promise<{ solid: CachedSolid; fresh: boolean }> {
     const cached = this.#cache.get(csg);
@@ -85,23 +140,26 @@ export class ModelBuilder {
 
     try {
       const nodes = parseCsg(csg);
-      const reason = unsupported(nodes);
-      let solid: CachedSolid;
+      let reason = unsupported(nodes);
+      let solid: CachedSolid | undefined;
       if (reason === undefined) {
-        const kernel = this.#kernel;
-        const mark = kernel.checkpoint();
-        let brep: Uint8Array;
-        let mesh: PartMesh;
+        // An extrusion, prism or scaled shape is new ground: trust it only where OpenSCAD's own mesh agrees.
+        const checked = needsCheck(nodes);
         try {
-          const { shape, volume } = buildSolid(kernel, nodes);
-          mesh = { ...previewSolid(kernel, shape), volume, quality: 'exact' };
-          brep = kernel.toBREPBinary(shape);
-        } finally {
-          // Boolean operations leave many intermediate shapes. Keep only the result.
-          kernel.releaseSince(mark);
+          solid = this.#exact(nodes);
+          if (checked && !(await this.#agrees(csg, solid.mesh))) {
+            this.#kernel.release(solid.shape);
+            solid = undefined;
+            reason = mismatchReason;
+          }
+        } catch (error) {
+          if (!checked) throw error;
+          console.warn(`The exact build failed, so ${context ?? file} is faceted:`, error instanceof Error ? error.message : error);
+          solid = undefined;
+          reason = mismatchReason;
         }
-        solid = { kind: 'exact', shape: kernel.fromBREPBinary(brep), mesh };
-      } else {
+      }
+      if (!solid) {
         const stl = await renderMesh(csg, this.#createOpenScad);
         let soup;
         try {

@@ -1,5 +1,7 @@
 import type { EdgeData, OcctKernel, ShapeHandle } from 'occt-wasm';
-import { type CsgNode, parseCsg, rigidProblem } from './csg.ts';
+import { type CsgNode, moveKind, parseCsg } from './csg.ts';
+import { extrudeFlat, regularPrism } from './extrude.ts';
+import { extrusion, isNothing } from './flat.ts';
 import type { AssemblySpec, Matrix } from './assembly.ts';
 import { maxTriangles } from './mesh.ts';
 import { CadError, type PartMesh, type Vec3 } from './protocol.ts';
@@ -30,12 +32,11 @@ function cross(a: Vec3, b: Vec3): Vec3 {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
-function rigidMatrix(input: unknown) {
-  const problem = rigidProblem(input);
-  if (problem === 'invalid') throw new CadError('The model contains an invalid transformation matrix.');
-  if (problem === 'scaled') {
-    throw new CadError('Only translations, rotations and mirrors are supported. Set dimensions on the primitive to resize it.');
-  }
+/**
+ * The 3x4 matrix for kernel.transform. OpenSCAD writes six significant digits, so
+ * restore right angles between the axes first, then apply the scale factor.
+ */
+function placement(input: unknown, factor = 1) {
   const [x, y, z] = input as number[][];
   const a: Vec3 = [x[0], y[0], z[0]];
   const b: Vec3 = [x[1], y[1], z[1]];
@@ -44,15 +45,14 @@ function rigidMatrix(input: unknown) {
     throw new CadError('A translation exceeds the supported coordinate range.');
   }
 
-  // OpenSCAD writes six significant digits. Restore orthogonality before applying a rigid transform.
   const u = unit(a);
   const projection = dot(u, b);
   const v = unit([b[0] - projection * u[0], b[1] - projection * u[1], b[2] - projection * u[2]]);
   const normal = cross(u, v);
   const handedness = Math.sign(dot(normal, c));
-  return [u[0], v[0], normal[0] * handedness, x[3],
-    u[1], v[1], normal[1] * handedness, y[3],
-    u[2], v[2], normal[2] * handedness, z[3]];
+  return [u[0] * factor, v[0] * factor, normal[0] * handedness * factor, x[3],
+    u[1] * factor, v[1] * factor, normal[1] * handedness * factor, y[3],
+    u[2] * factor, v[2] * factor, normal[2] * handedness * factor, z[3]];
 }
 
 function edgeSegments({ points, edgeGroups }: EdgeData) {
@@ -107,9 +107,27 @@ export function buildSolid(kernel: OcctKernel, csg: string | CsgNode[]) {
         return result;
       }
       case 'multmatrix': {
-        const matrix = rigidMatrix(positional[0]);
+        const move = moveKind(positional[0]);
+        if (move.kind === 'invalid') throw new CadError('The model contains an invalid transformation matrix.');
+        if (move.kind === 'other') throw new CadError('A scale of zero or less, or a shear, has to be built from a mesh.');
+        const [x, y, z] = positional[0] as number[][];
         const child = fuse(children.map(build));
-        return child == null ? child : kernel.transform(child, matrix);
+        if (child == null) return child;
+        // Equal factors keep flat faces flat. Different factors turn every face into a spline surface.
+        if (move.kind === 'axes') {
+          if ([x[3], y[3], z[3]].some((value) => Math.abs(value) > maxLength)) throw new CadError('A translation exceeds the supported coordinate range.');
+          const [fx, fy, fz] = move.factors;
+          return kernel.generalTransform(child, [fx, 0, 0, x[3], 0, fy, 0, y[3], 0, 0, fz, z[3]]);
+        }
+        return kernel.transform(child, placement(positional[0], move.kind === 'uniform' ? move.factor : 1));
+      }
+      case 'linear_extrude': {
+        const found = extrusion(node);
+        if ('reason' in found) throw new CadError(`linear_extrude() has to be built from a mesh: ${found.reason}.`);
+        if (isNothing(found.flat)) return null;
+        const height = length(found.height, 'Extrusion height');
+        const shape = extrudeFlat(kernel, found.flat, height);
+        return shape !== null && found.center ? kernel.translate(shape, 0, 0, -height / 2) : shape;
       }
       case 'cube': {
         const size = named.get('size');
@@ -120,10 +138,17 @@ export function buildSolid(kernel: OcctKernel, csg: string | CsgNode[]) {
       }
       case 'sphere':
       case 'cylinder': {
-        // Smooth at any $fa and $fs. Only $fn above zero asks for facets, and unsupported() sends those to the mesh path.
-        if ((named.get('$fn') ?? 0) !== 0) throw new CadError(`${operation}() with $fn has to be built from a mesh.`);
+        // Smooth at any $fa and $fs. Only $fn above zero asks for facets. Equal radii then make a regular prism, and unsupported() sends the rest to the mesh path.
+        const sides = named.get('$fn') ?? 0;
+        if (typeof sides !== 'number' || (sides !== 0 && (operation === 'sphere' || named.get('r1') !== named.get('r2')))) {
+          throw new CadError(`${operation}() with $fn has to be built from a mesh.`);
+        }
         if (operation === 'sphere') return kernel.makeSphere(length(named.get('r'), 'Sphere radius'));
         const height = length(named.get('h'), 'Cylinder height');
+        if (sides !== 0) {
+          const prism = regularPrism(kernel, Math.max(3, Math.trunc(sides)), length(named.get('r1'), 'Cylinder radius'), height);
+          return named.get('center') === true ? kernel.translate(prism, 0, 0, -height / 2) : prism;
+        }
         const bottom = length(named.get('r1'), 'Bottom radius', true);
         const top = length(named.get('r2'), 'Top radius', true);
         if (bottom === 0 && top === 0) throw new CadError('A cylinder or cone needs at least one positive radius.');

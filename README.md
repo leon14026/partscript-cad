@@ -117,8 +117,13 @@ Anything OpenSCAD can render builds: `linear_extrude`, `rotate_extrude`, `hull`,
 
 A part is built one of two ways, and the build output says which:
 
-- **Exact.** A part made only of `cube`, `sphere`, `cylinder` (including a cone or frustum), `translate`, `rotate`, `mirror`, `union`, `difference`, `intersection`, `color` and `render` is rebuilt in OpenCascade with true planes, cylinders, cones and spheres. This is what the STEP file contains. Curves stay smooth at any `$fa` and `$fs`; only `$fn` above zero asks for visible facets.
-- **Faceted.** Any other part is meshed by OpenSCAD itself and shown as it is. For STEP the mesh is sewn into a valid solid and triangles in one plane are merged, so the file has flat faces and no true curves. Faceted STEP files are large, about 4 KiB per face. The build output names each faceted part and the operation that caused it, for example `chute.scad uses hull`.
+- **Exact.** A part is rebuilt in OpenCascade with true planes, cylinders, cones and spheres, and that is what the STEP file contains. Exact parts are made only of:
+  - `cube`, `sphere`, `cylinder` (including a cone or frustum), `translate`, `rotate`, `mirror`, `union`, `difference`, `intersection`, `color` and `render`. Curves stay smooth at any `$fa` and `$fs`. A `cylinder` with `$fn` above zero and equal radii is a prism with that many flat sides.
+  - `scale`. One factor on all axes keeps flat faces flat. Different factors on the axes (`scale([1, 2, 3])`) are exact in size, but the faces of a scaled part become spline surfaces. A shear, a zero factor or a negative factor is faceted.
+  - `linear_extrude` of a flat shape, without `twist` or `scale`. The flat shape may use `circle`, `square`, `polygon` (with holes, not crossing itself), `union`, `difference`, `intersection`, `hull` and `offset` of convex shapes, and `translate`, `rotate`, `mirror` and `scale` with one factor. Round parts of the outline become true cylinders, so a hole is round in STEP. One extrusion may hold up to 100 separate shapes, and a polygon up to 1,500 points per outline.
+  
+  When a part uses an extrusion, a `$fn` prism or a scale, the build compares it with OpenSCAD's own mesh of the same shapes made at fine resolution: the volume must agree within 0.3% and each side of the bounding box within 0.05 mm. If it does not, the part is faceted instead and the build output says so, so a bug in the exact builder can cost smooth curves but never a wrong shape.
+- **Faceted.** Any other part is meshed by OpenSCAD itself and shown as it is. The common causes are `hull` of 3D shapes, `rotate_extrude`, `minkowski`, `polyhedron`, a twisted or tapered `linear_extrude`, an `offset` over a union, a difference or a polygon, a `hull` of a shape that is not convex, and more than 100 shapes in one extrusion. For STEP the mesh is sewn into a valid solid and triangles in one plane are merged, so the file has flat faces and no true curves. Faceted STEP files are large, about 4 KiB per face. The build output names each faceted part and the operation that caused it, for example `chute.scad uses hull`.
 
 A part may hold several separate bodies. A file that draws only flat 2D shapes needs `linear_extrude`. `text()` fails because no fonts are bundled. Imports are unavailable in this version. The geometry worker runs the official OpenSCAD evaluator and keeps the solids for the current build. The Three.js view draws a mesh of each part and the STEP writer uses the solid itself. An edit invalidates export until the new revision builds. Keep the SCAD file as the parametric source.
 
@@ -132,7 +137,7 @@ BOSL2 is bundled. Write `include <BOSL2/std.scad>` and, for example, `include <B
 
 - **Download.** The library is a 1.2 MiB zip, fetched the first time a project includes it during a visit. Projects that do not include BOSL2 never download it.
 - **Speed.** Each OpenSCAD run that includes BOSL2 takes about a quarter of a second longer to read it. A part file per part means one run per file, so for a machine with many parts prefer `part("name") ...` in one assembly file (see above), which evaluates once.
-- **Faceted.** BOSL2 gears come out as `linear_extrude` of a polygon and threads as `polyhedron`, so those parts are faceted and their STEP files have flat faces, as described above. The build output names each faceted part. A gear's tooth flanks are short straight segments, and its top and bottom faces are flat.
+- **Exact and faceted.** BOSL2 gears come out as `linear_extrude` of a polygon, so a gear is exact: a prism of its tooth outline, with flat flanks and flat top and bottom faces. Threads come out as `polyhedron`, so those parts are faceted and their STEP files have flat faces, as described above. The build output names each faceted part.
 - **Version.** The zip holds the top-level `.scad` files of BOSL2 commit `ca677d0`, unmodified, with its BSD-2-Clause license. `npm run libraries` rebuilds it from that commit.
 
 ## Validate

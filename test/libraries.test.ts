@@ -37,28 +37,27 @@ const header = 'include <BOSL2/std.scad>\ninclude <BOSL2/gears.scad>\n';
 const radii = (mod: number, teeth: number) => ({ pitch: mod * teeth / 2, tip: mod * teeth / 2 + mod, root: mod * teeth / 2 - 1.25 * mod });
 const cylinder = (r: number, h: number) => Math.PI * r * r * h;
 
-test('a BOSL2 spur gear builds faceted, with a volume between its root and tip cylinders', async () => {
+test('a BOSL2 spur gear builds exact, as a prism of its tooth outline, with a volume between its root and tip cylinders', async () => {
   const { builder } = counted();
   const model = await builder.build({ 'gear.scad': `${header}spur_gear(mod = 2, teeth = 20, thickness = 8);` }, 'gear.scad');
   const [mesh] = model.preview.meshes;
   const { pitch, tip, root } = radii(2, 20);
   assert.deepEqual([root, pitch, tip], [17.5, 20, 22]);
-  assert.equal(mesh.quality, 'faceted');
-  assert.equal(mesh.reason, 'linear_extrude');
+  assert.equal(mesh.quality, 'exact');
   assert.ok(mesh.volume > cylinder(root, 8) && mesh.volume < cylinder(tip, 8), `volume ${mesh.volume}`);
   // Rough hand estimate: tooth and space are about equal at the pitch circle, so the area is
   // near the pitch circle's, less the extra 0.25 module of root clearance over half its circumference.
   const estimate = (Math.PI * pitch ** 2 - 0.5 * 0.25 * 2 * (2 * Math.PI * pitch)) * 8;
   near(mesh.volume, estimate, 0.03);
   // Eight thick, centred on z. Tips are 18 degrees apart, so one lies within 9 degrees of each axis.
-  assert.equal(mesh.bounds.min[2], -4);
-  assert.equal(mesh.bounds.max[2], 4);
+  near(mesh.bounds.min[2], -4, 1e-4);
+  near(mesh.bounds.max[2], 4, 1e-4);
   for (let axis = 0; axis < 2; axis++) {
     assert.ok(mesh.bounds.max[axis] <= tip + 1e-3 && mesh.bounds.max[axis] >= tip * Math.cos(9 * Math.PI / 180), `reach ${mesh.bounds.max[axis]}`);
     assert.ok(mesh.bounds.min[axis] >= -tip - 1e-3 && mesh.bounds.min[axis] <= -tip * Math.cos(9 * Math.PI / 180));
   }
 
-  // The faceted part still exports as one solid.
+  // The exact part exports as one solid.
   const bytes = builder.exportStep(model);
   await writeFile(new URL('bosl2_gear.step', output), bytes);
   const mark = kernel.checkpoint();

@@ -97,6 +97,20 @@ export function checkProject(files: ProjectFiles, entry: string): string[] {
   return [...used].sort();
 }
 
+/**
+ * OpenSCAD words a misspelt or missing name as "Ignoring unknown variable". The
+ * page shows the file and line beside the message, so say what to change.
+ */
+export function plainProblem(message: string): string {
+  const unknown = /^Ignoring unknown (variable|module|function) ["'](.+)["']$/.exec(message);
+  if (!unknown) return message;
+  const [, kind, name] = unknown;
+  if (kind === 'variable') {
+    return `The variable ${name} is not defined. Fix its spelling, or give it a value above this line, for example ${name} = 1;. If it should come from a file you include, that file does not define it: check that you are including the right version of it.`;
+  }
+  return `There is no ${kind} named ${name}. Fix its spelling, or include the file that defines it. Libraries other than BOSL2 are unavailable.`;
+}
+
 export interface Evaluation {
   csg: string;
   /** ECHO lines written by the user's code. */
@@ -152,8 +166,8 @@ export async function evaluateScad(
     const place = /\bin file (.+?), line (\d+)/.exec(firstProblem);
     const reported = place?.[1].split('/').at(-1);
     const file = reported && Object.hasOwn(files, reported) ? reported : entry;
-    const message = firstProblem.replace(/^(?:ERROR|WARNING):\s*/, '')
-      .replace(/ in file .+?(?:, line \d+|$)/, '').slice(0, 800);
+    const message = plainProblem(firstProblem.replace(/^(?:ERROR|WARNING):\s*/, '')
+      .replace(/ in file .+?(?:, line \d+|$)/, '')).slice(0, 800);
     // A file name that passed checkProject but is not in the library.
     const missing = /^Can't open (?:include file|library) '([^']+)'/.exec(message)?.[1];
     if (missing && libraryOf(missing)) {
@@ -174,6 +188,37 @@ export async function evaluateScad(
 }
 
 /**
+ * Remove every `group()` that holds exactly one shape. Such a group is the shape
+ * itself, but OpenSCAD takes a level of its own call stack for each one. A BOSL2
+ * gear is dumped 141 levels deep, which needs about 600 KB of the roughly 1 MB a
+ * browser worker has, and so it failed now and then with "Maximum call stack
+ * size exceeded", depending on how far the browser had compiled OpenSCAD. After
+ * this the same gear is 16 levels deep. A dump that does not balance comes back
+ * unchanged.
+ */
+export function flattenGroups(csg: string): string {
+  const lines = csg.split('\n');
+  const drop = new Set<number>();
+  const open: { line: number; group: boolean; children: number }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i].trim();
+    if (text === '}') {
+      const block = open.pop();
+      if (!block) return csg;
+      if (block.group && block.children === 1) {
+        drop.add(block.line);
+        drop.add(i);
+      }
+      continue;
+    }
+    if (open.length) open[open.length - 1].children++;
+    if (text.endsWith('{')) open.push({ line: i, group: text === 'group() {', children: 0 });
+  }
+  if (open.length || !drop.size) return csg;
+  return lines.filter((_, i) => !drop.has(i)).join('\n');
+}
+
+/**
  * Mesh a CSG dump, or a slice of one, with OpenSCAD's own renderer. Returns a
  * binary STL. A dump is valid OpenSCAD input, so no libraries are needed.
  */
@@ -181,7 +226,7 @@ export async function renderMesh(csg: string, createOpenScad: OpenScadFactory): 
   const lines: string[] = [];
   const print = (text: string) => lines.push(text);
   const scad = await createOpenScad({ noInitialRun: true, print, printErr: print });
-  scad.FS.writeFile(meshInput, csg);
+  scad.FS.writeFile(meshInput, flattenGroups(csg));
   let status: number | undefined;
   try {
     status = scad.callMain(['--backend=manifold', '--export-format=binstl', '-o', meshOutput, meshInput]);

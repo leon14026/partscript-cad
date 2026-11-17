@@ -87,6 +87,21 @@ test('failed builds reject empty results, bad syntax, unknown modules and missin
   await assert.rejects(build('cube(4);\nmisspelled_module();'), { line: 2 });
 });
 
+test('an unknown name says what to change instead of repeating OpenSCAD', async () => {
+  await assert.rejects(build('size = 4;\ncube(handle_gap);'), (error: Error & { line?: number }) => {
+    assert.equal(error.line, 2);
+    assert.match(error.message, /^The variable handle_gap is not defined\. Fix its spelling, or give it a value above this line/);
+    assert.match(error.message, /right version/);
+    assert.doesNotMatch(error.message, /Ignoring/);
+    return true;
+  });
+  await assert.rejects(build('cube(4);\nmisspelled_module();'), (error: Error) => {
+    assert.match(error.message, /^There is no module named misspelled_module\. Fix its spelling, or include the file that defines it/);
+    return true;
+  });
+  await assert.rejects(build('cube(nofun(2));'), /There is no function named nofun\. Fix its spelling/);
+});
+
 test('facet settings no longer stop a part, and separate bodies stay in one part', async () => {
   const round = await build('$fa = 4; $fs = 0.5; cylinder(h = 5, d = 12);');
   near(round.volume, Math.PI * 36 * 5);

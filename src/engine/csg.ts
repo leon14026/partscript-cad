@@ -1,3 +1,4 @@
+import { extrusion } from './flat.ts';
 import { CadError } from './protocol.ts';
 
 export type Value = number | boolean | string | null | Value[];
@@ -149,7 +150,7 @@ const solids = new Set(['cube', 'sphere', 'cylinder']);
 const flat = new Set(['circle', 'square', 'polygon', 'text']);
 const drawing = new Set([...solids, ...flat, 'polyhedron', 'import', 'surface']);
 // The exact builder in solid.ts handles these. color and render pass their children through.
-const exact = new Set([...solids, 'multmatrix', 'group', 'union', 'difference', 'intersection', 'color', 'render']);
+const exact = new Set([...solids, 'linear_extrude', 'multmatrix', 'group', 'union', 'difference', 'intersection', 'color', 'render']);
 
 /** The tag number of an inline part's render node, or undefined for any other node. */
 export function nodeTag(node: CsgNode): number | undefined {
@@ -195,20 +196,75 @@ function isDiagonal(input: unknown) {
 }
 
 /**
+ * What a multmatrix does to a shape: 'rigid' (rotation, mirror and move), 'uniform'
+ * (those times one scale factor), 'axes' (a different positive factor on each axis,
+ * no shear), 'invalid', or 'other' for anything the exact builder cannot make.
+ */
+export type MoveKind =
+  | { kind: 'rigid' | 'invalid' | 'other' }
+  | { kind: 'uniform'; factor: number }
+  | { kind: 'axes'; factors: [number, number, number] };
+
+export function moveKind(input: unknown): MoveKind {
+  const problem = rigidProblem(input);
+  if (problem === 'invalid') return { kind: 'invalid' };
+  if (!problem) return { kind: 'rigid' };
+  const [x, y, z, w] = input as number[][];
+  if (w[0] !== 0 || w[1] !== 0 || w[2] !== 0 || w[3] !== 1) return { kind: 'other' };
+  if (isDiagonal(input)) {
+    const factors: [number, number, number] = [x[0], y[1], z[2]];
+    const same = factors.every((factor) => Math.abs(factor - factors[0]) <= 4e-6 * Math.abs(factors[0]));
+    if (!same && factors.every((factor) => factor > 0)) return { kind: 'axes', factors };
+  }
+  // A turned, mirrored or scaled shape whose three axes stay at right angles and keep one length.
+  const axes = [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]];
+  const lengths = axes.map((axis) => Math.hypot(axis[0], axis[1], axis[2]));
+  const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const square = lengths.every((length) => length > 0 && Math.abs(length - lengths[0]) <= 4e-6 * lengths[0])
+    && [dot(axes[0], axes[1]), dot(axes[0], axes[2]), dot(axes[1], axes[2])].every((value) => Math.abs(value) <= 4e-6 * lengths[0] ** 2);
+  return square ? { kind: 'uniform', factor: lengths[0] } : { kind: 'other' };
+}
+
+/**
+ * True when the exact builder uses something an OpenSCAD mesh can disagree with:
+ * an extrusion, a prism from $fn, or a scaled shape. build.ts checks such a part
+ * against OpenSCAD's own mesh. A part of only boxes, cylinders and spheres needs no check.
+ */
+export function needsCheck(nodes: CsgNode[]): boolean {
+  return nodes.some((node) => {
+    if (node.operation === 'linear_extrude') return true;
+    if (node.operation === 'cylinder' && (node.named.get('$fn') ?? 0) !== 0) return true;
+    if (node.operation === 'multmatrix' && moveKind(node.positional[0]).kind !== 'rigid') return true;
+    return needsCheck(node.children);
+  });
+}
+
+/**
  * The first operation in the tree that the exact builder (solid.ts) cannot make,
- * or undefined when every node is a box, cylinder, sphere, rigid move or Boolean.
- * Such a part is meshed by OpenSCAD instead. The name says why, for example "hull".
+ * or undefined when every node is a box, cylinder, sphere, extrusion, scaled or
+ * rigid move or Boolean. Such a part is meshed by OpenSCAD instead. The name
+ * says why, for example "hull". An extrusion is exact when flat.ts can describe
+ * its whole 2D shape.
  */
 export function unsupported(nodes: CsgNode[]): string | undefined {
   for (const node of nodes) {
     const { operation } = node;
     if (!exact.has(operation)) return operation;
-    // $fn above zero asks for visible facets. Any $fa and $fs still mean a smooth shape.
-    if ((operation === 'sphere' || operation === 'cylinder') && (node.named.get('$fn') ?? 0) !== 0) return `${operation} with $fn`;
+    if (operation === 'linear_extrude') {
+      const found = extrusion(node);
+      if ('reason' in found) return found.reason;
+      continue;
+    }
+    if (operation === 'sphere' && (node.named.get('$fn') ?? 0) !== 0) return 'sphere with $fn';
+    if (operation === 'cylinder' && (node.named.get('$fn') ?? 0) !== 0) {
+      // $fn above zero asks for visible facets. Equal radii make a regular prism. A cone cannot be exact.
+      const [bottom, top] = [node.named.get('r1'), node.named.get('r2')];
+      if (typeof bottom !== 'number' || bottom !== top || bottom <= 0) return 'cylinder with $fn';
+    }
     if (operation === 'multmatrix') {
-      const problem = rigidProblem(node.positional[0]);
-      if (problem === 'invalid') return operation;
-      if (problem) return isDiagonal(node.positional[0]) ? 'scale' : operation;
+      const move = moveKind(node.positional[0]);
+      if (move.kind === 'invalid') return operation;
+      if (move.kind === 'other') return isDiagonal(node.positional[0]) ? 'scale' : operation;
     }
     const inner = unsupported(node.children);
     if (inner) return inner;

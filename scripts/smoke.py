@@ -157,7 +157,8 @@ with sync_playwright() as p:
     page.wait_for_timeout(200)
     page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
     notice = page.inner_text('.output-message').replace('\n', ' ')
-    if 'Built one solid' not in notice or 'faceted' not in notice or page.locator('.output-message.error').count():
+    # A gear is a prism of its tooth outline, so it builds exact and the notice does not mention a faceted part.
+    if 'Built one solid' not in notice or 'faceted' in notice or page.locator('.output-message.error').count():
         problems.append(f'BOSL2 gear: {notice}')
     if [status for status, _ in library_fetches] != [200]:
         problems.append(f'BOSL2 should be fetched once with status 200: {library_fetches}')
