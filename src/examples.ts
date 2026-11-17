@@ -1,4 +1,5 @@
 import { swivelArm } from './assemblyExample.ts';
+import { crankRocker } from './linkageExample.ts';
 import type { ProjectFiles } from './engine/protocol.ts';
 
 export interface Example {
@@ -115,6 +116,12 @@ export const exampleProjects: ExampleProject[] = [
     description: 'Four parts, two hinges and a slider you can move.',
     files: swivelArm,
     open: 'swivel_arm.scad',
+  },
+  {
+    name: 'Crank-rocker linkage',
+    description: 'A four-bar loop. Play the crank and watch the rocker swing.',
+    files: crankRocker,
+    open: 'four_bar.scad',
   },
   ...examples.map((example) => ({
     name: example.name,

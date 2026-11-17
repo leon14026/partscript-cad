@@ -176,8 +176,7 @@ test('assembly mistakes are explained', async () => {
   await assert.rejects(run('part("a", "a.scad"); part("b", "b.scad"); joint("j", type = "slider", parent = "a", child = "b");'), /slider needs limits/);
   await assert.rejects(run('part("a", "a.scad"); part("b", "b.scad"); joint("j", type = "hinge", parent = "a", child = "b", limits = [0, 90], value = 120);'), /outside limits/);
   await assert.rejects(run('part("a", "a.scad"); part("b", "b.scad"); joint("j", type = "hinge", parent = "a", child = "b", axis = [0, 0, 0]);'), /axis needs a direction/);
-  await assert.rejects(run('part("a", "a.scad"); part("b", "b.scad"); joint("j", parent = "a", child = "b"); joint("k", parent = "b", child = "a");'), /form a loop/);
-  await assert.rejects(run('part("a", "a.scad"); part("b", "b.scad"); joint("j", parent = "a", child = "b"); joint("k", parent = "a", child = "b");'), /already carried/);
+  await assert.rejects(run('part("a", "a.scad"); joint("j", parent = "a", child = "a");'), /must be different parts/);
   await assert.rejects(run('part("a", "a.scad"); part("b", "b.scad", at = [1, 0, 0]); joint("j", parent = "a", child = "b");'), /Place it with the joint/);
   await assert.rejects(run('part("a", "a.scad"); cube(3);'), /Move the shapes into a part file/);
   await assert.rejects(run('part("a", "main.scad");'), /cannot use itself/);

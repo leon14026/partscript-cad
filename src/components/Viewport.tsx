@@ -1,6 +1,7 @@
-import { Box, Boxes, Expand, Grid3X3, Layers2, LoaderCircle, Mouse, MoveHorizontal, RotateCcw, RotateCw, TriangleAlert } from 'lucide-react';
+import { Box, Boxes, Expand, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, RotateCcw, RotateCw, TriangleAlert } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { clampJoint, poseBounds, type JointSpec } from '../engine/assembly.ts';
+import { clampJoint, movingJoints, poseBounds, structureOf, turnsFully, type JointSpec } from '../engine/assembly.ts';
+import { advanceJoint, loopStates, moveJoint } from '../engine/kinematics.ts';
 import type { ModelPreview, Pose } from '../engine/protocol.ts';
 import { createViewer, type ViewAngle } from './viewer.ts';
 
@@ -12,7 +13,17 @@ const angles: { angle: ViewAngle; label: string; name: string }[] = [
 ];
 const measure = new Intl.NumberFormat('en-US', { maximumFractionDigits: 4, useGrouping: false });
 
-function JointControl({ joint, value, onChange }: { joint: JointSpec; value: number; onChange(value: number, dragging: boolean): void }) {
+interface JointControlProps {
+  joint: JointSpec;
+  value: number;
+  /** True when the joint is part of a closed loop, so other joints follow it. */
+  linked: boolean;
+  playing: boolean;
+  onChange(value: number, dragging: boolean): void;
+  onPlay(): void;
+}
+
+function JointControl({ joint, value, linked, playing, onChange, onPlay }: JointControlProps) {
   const [low, high] = joint.limits;
   const unit = joint.type === 'hinge' ? '°' : 'mm';
   const step = high - low > 20 ? 1 : 0.1;
@@ -21,12 +32,16 @@ function JointControl({ joint, value, onChange }: { joint: JointSpec; value: num
   const [typed, setTyped] = useState<string | null>(null);
   return (
     <div className="joint">
-      <label htmlFor={id} title={`${joint.parent} → ${joint.child}`}>
+      <label htmlFor={id} title={`${joint.parent} → ${joint.child}${linked ? ' · in a loop: the joints around the loop move together' : ''}`}>
         {joint.type === 'hinge' ? <RotateCw size={13}/> : <MoveHorizontal size={13}/>}<span>{joint.name}</span>
+        {linked && <Link2 className="joint-linked" size={12} aria-label="in a loop"/>}
       </label>
       <span className="joint-value">
+        <button type="button" className="joint-play" aria-pressed={playing} title={playing ? `Stop ${joint.name}` : `Run ${joint.name} through its travel`} aria-label={playing ? `Stop ${joint.name}` : `Play ${joint.name}`} disabled={joint.limits[0] === joint.limits[1]} onClick={onPlay}>
+          {playing ? <Pause size={11}/> : <Play size={11}/>}
+        </button>
         <input type="number" aria-label={`${joint.name} value in ${joint.type === 'hinge' ? 'degrees' : 'millimetres'}`} min={low} max={high} step={step}
-          value={typed ?? measure.format(Math.round(value * 1000) / 1000)}
+          value={typed ?? measure.format(Math.round(value * 100) / 100)}
           onChange={(event) => {
             setTyped(event.currentTarget.value);
             const next = event.currentTarget.valueAsNumber;
@@ -63,6 +78,9 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
   const [edges, setEdges] = useState(true);
   const [angle, setAngle] = useState<ViewAngle | null>('iso');
   const [jointsOpen, setJointsOpen] = useState(true);
+  const [playing, setPlaying] = useState<string | null>(null);
+  const live = useRef({ model, pose, onPose });
+  live.current = { model, pose, onPose };
 
   useEffect(() => {
     if (!canvasHost.current) return;
@@ -88,6 +106,38 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
       controller.current?.setPose(pose, dragging.current);
     }
   }, [model, pose]);
+  // Play: run one joint through its travel. A hinge without end stops keeps turning.
+  // Any other joint goes back and forth, and so does one that meets a dead point.
+  useEffect(() => {
+    if (!playing) return;
+    let direction = 1;
+    let last = performance.now();
+    let frame = requestAnimationFrame(function tick(now) {
+      const { model: current, pose: at, onPose: send } = live.current;
+      const joint = current?.assembly.joints.find((item) => item.name === playing);
+      if (!current || !joint) {
+        setPlaying(null);
+        return;
+      }
+      const seconds = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      const speed = joint.type === 'hinge' ? 110 : (joint.limits[1] - joint.limits[0]) / 2.5;
+      const moved = advanceJoint(current.assembly, at, joint.name, direction * speed * seconds);
+      const value = moved.pose[joint.name];
+      const atStop = !turnsFully(joint) && (value >= joint.limits[1] - 1e-9 || value <= joint.limits[0] + 1e-9);
+      if (!moved.reached || atStop) direction = atStop ? (value <= joint.limits[0] + 1e-9 ? 1 : -1) : -direction;
+      dragging.current = true;
+      send(moved.pose);
+      frame = requestAnimationFrame(tick);
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      dragging.current = false;
+      // Redraw at full quality once the motion stops.
+      controller.current?.setPose(live.current.pose, false);
+    };
+  }, [playing]);
+  useEffect(() => setPlaying(null), [model]);
   useEffect(() => controller.current?.showGrid(grid), [grid]);
   useEffect(() => controller.current?.showEdges(edges), [edges]);
 
@@ -96,7 +146,9 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
     const { min, max } = poseBounds(model.assembly, model.partMesh.map((i) => model.meshes[i].bounds), pose);
     return max.map((value, i) => value - min[i]);
   }, [model, pose]);
-  const joints = model?.assembly.joints.filter((joint) => joint.type !== 'fixed') ?? [];
+  const joints = model ? movingJoints(model.assembly) : [];
+  const looped = model ? structureOf(model.assembly).looped : [];
+  const loops = useMemo(() => (model ? loopStates(model.assembly, pose) : []), [model, pose]);
   const partCount = model?.assembly.parts.length ?? 0;
 
   return (
@@ -134,10 +186,22 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
             {jointsOpen && (
               <div className="joint-list">
                 {joints.map((joint) => (
-                  <JointControl key={joint.name} joint={joint} value={clampJoint(joint, pose[joint.name])} onChange={(value, isDragging) => {
-                    dragging.current = isDragging;
-                    onPose({ ...pose, [joint.name]: value });
-                  }}/>
+                  <JointControl key={joint.name} joint={joint} value={clampJoint(joint, pose[joint.name])}
+                    linked={looped[model!.assembly.joints.indexOf(joint)]} playing={playing === joint.name}
+                    onPlay={() => setPlaying(playing === joint.name ? null : joint.name)}
+                    onChange={(value, isDragging) => {
+                      if (playing) setPlaying(null);
+                      dragging.current = isDragging;
+                      // In a loop the other joints follow, and the move stops where the loop would open.
+                      onPose(isDragging || value !== clampJoint(joint, pose[joint.name]) ? moveJoint(model!.assembly, pose, joint.name, value).pose : { ...pose });
+                    }}/>
+                ))}
+                {loops.map((loop) => (
+                  <div key={loop.joint} className={`joint-loop${loop.closed ? '' : ' open'}`} title="A closing joint has no value of its own. The joints around its loop move to keep it shut.">
+                    {loop.closed ? <Link2 size={12}/> : <TriangleAlert size={12}/>}
+                    <span>{loop.joint}</span>
+                    <i>{loop.closed ? 'closes loop' : `open by ${measure.format(Math.round(loop.gap * 100) / 100)} mm`}</i>
+                  </div>
                 ))}
               </div>
             )}

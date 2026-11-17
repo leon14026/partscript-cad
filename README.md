@@ -46,7 +46,27 @@ The preview shows a slider for each moving joint. Moving a joint repositions the
 
 Shared dimensions go in a file such as `params.scad` that each part starts with `include <params.scad>`. Pin a tab to keep **Run** building the assembly while a part file is open. An edit rebuilds the solids whose geometry changed and reuses the rest.
 
-A part hangs from one joint, so the joints form a tree. Closed loops such as four-bar linkages, mates solved from constraints, and collision checks are unavailable in this version. Open the **Swivel arm assembly** example to see four parts, two hinges and a slider.
+Open the **Swivel arm assembly** example to see four parts, two hinges and a slider.
+
+## Linkages and closed loops
+
+Joints are read in the order they are written. A joint that links two groups of parts not yet connected carries one from the other. A joint between parts that are already connected closes a loop. In a four-bar linkage three hinges carry the crank, the coupler and the rocker, and the fourth hinge closes the ring:
+
+```scad
+joint("crank",      type = "hinge", parent = "ground",  child = "crank",   at = [0, 0, t], value = 40);
+joint("crank_pin",  type = "hinge", parent = "crank",   child = "coupler", at = [crank_length, 0, t]);
+joint("rocker",     type = "hinge", parent = "ground",  child = "rocker",  at = [ground_length, 0, t], value = 100);
+joint("rocker_pin", type = "hinge", parent = "coupler", child = "rocker",
+      at = [coupler_length, 0, 0], child_at = [rocker_length, 0, t]);
+```
+
+`child_at` and `child_rot` say where a joint sits on the child when that is not the child's origin. A part with two joints needs them on at least one.
+
+A closing joint has no slider. The joints around its loop move together to keep it shut. Drag any of them, or press play on one: a hinge without `limits` keeps turning, and any other joint runs back and forth. A move stops where the loop can no longer stay shut, such as the end of a rocker's swing or a piston's dead centre. The solver takes small steps from the current pose, so a linkage stays in the form it was assembled in.
+
+In a loop, the first joint with a `value` is held when the model opens, and the `value` of any other joint is a starting guess. A guess picks between the forms a linkage can assemble in, such as open and crossed. If the links cannot reach each other, the build output names the closing joint and the gap that is left.
+
+Hinges, sliders and fixed joints can all close a loop, so slider-cranks and scissor mechanisms work the same way. Travel limits apply to the joints that have sliders and not to closing joints. Gears, cams, mates solved from faces, and collision checks are unavailable in this version. Open the **Crank-rocker linkage** example to watch a crank turn fully while its rocker swings.
 
 ## Geometry and precision
 
@@ -60,7 +80,7 @@ Each job has a 60-second deadline and the user can cancel it. Input is limited t
 
 ## Validate
 
-`npm run check` checks TypeScript. `npm test` runs both WASM kernels against the example parts and the example assembly, writes STEP fixtures in `.test-output/`, and exercises failure cases. The assembly test reads the exported STEP back and compares every part's position with the pose solved for the preview. The fixture test checks previews, dimensions, volume, units, analytic surfaces and parameter regeneration. Run `test/verify_in_freecad.py` with a Python environment where FreeCAD's `FreeCAD` and `Part` modules can be imported to check the exports independently in FreeCAD.
+`npm run check` checks TypeScript. `npm test` runs both WASM kernels against the example parts and the example assembly, writes STEP fixtures in `.test-output/`, and exercises failure cases. The assembly test reads the exported STEP back and compares every part's position with the pose solved for the preview. The loop tests turn a crank-rocker through a full revolution and compare the rocker's swing and a slider-crank's piston position with their closed-form values. The fixture test checks previews, dimensions, volume, units, analytic surfaces and parameter regeneration. Run `test/verify_in_freecad.py` with a Python environment where FreeCAD's `FreeCAD` and `Part` modules can be imported to check the exports independently in FreeCAD.
 
 ## License
 

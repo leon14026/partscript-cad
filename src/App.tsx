@@ -2,8 +2,9 @@ import { Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeX
 import { useEffect, useRef, useState } from 'react';
 import { CodeEditor, type EditorControl } from './components/CodeEditor.tsx';
 import { Viewport } from './components/Viewport.tsx';
-import { clampJoint, defaultPose, fileNamePattern, type AssemblySpec } from './engine/assembly.ts';
+import { clampJoint, defaultPose, fileNamePattern, structureOf, type AssemblySpec } from './engine/assembly.ts';
 import { BrowserGeometryEngine } from './engine/client.ts';
+import { loopStates, openingPose, settlePose } from './engine/kinematics.ts';
 import { CadError, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type BuildStage, type Diagnostic, type ModelPreview, type Pose } from './engine/protocol.ts';
 import { loadDraft, saveDraft } from './drafts.ts';
 import { exampleProjects } from './examples.ts';
@@ -52,19 +53,34 @@ function builtText(model: ModelPreview) {
   const { parts, joints } = model.assembly;
   if (!model.isAssembly) return `Built one solid in ${elapsed(model.buildMs)}.`;
   const kept = parts.length > 1 && model.rebuilt < model.meshes.length ? ` ${count(model.rebuilt, 'solid')} rebuilt, the rest reused.` : '';
-  return `Built ${count(parts.length, 'part')} and ${count(joints.length, 'joint')} in ${elapsed(model.buildMs)}.${kept}`;
+  const loops = structureOf(model.assembly).closures.length;
+  return `Built ${count(parts.length, 'part')} and ${count(joints.length, 'joint')}${loops ? ` with ${count(loops, 'closed loop')}` : ''} in ${elapsed(model.buildMs)}.${kept}`;
 }
 
-/** Keep the joints the user moved, unless the code changed that joint. */
-function carryPose(next: AssemblySpec, previous: AssemblySpec | undefined, pose: Pose): Pose {
+/**
+ * The pose to show after a build. Joints the user moved stay where they are,
+ * unless the code changed that joint. Loops are then shut again, because an
+ * edited link length moves the joints around its loop.
+ */
+function carryPose(next: AssemblySpec, previous: AssemblySpec | undefined, pose: Pose) {
+  if (!previous) return openingPose(next);
   const result = defaultPose(next);
   for (const joint of next.joints) {
-    const before = previous?.joints.find((item) => item.name === joint.name);
+    const before = previous.joints.find((item) => item.name === joint.name);
     const unchanged = before && before.type === joint.type && before.value === joint.value
       && before.limits[0] === joint.limits[0] && before.limits[1] === joint.limits[1];
-    if (unchanged && joint.name in pose) result[joint.name] = clampJoint(joint, pose[joint.name]);
+    if (unchanged && joint.name in pose && joint.name in result) result[joint.name] = clampJoint(joint, pose[joint.name]);
   }
-  return result;
+  const { looped } = structureOf(next);
+  const settled = settlePose(next, result, next.joints.filter((joint, j) => looped[j] && joint.given).map((joint) => joint.name));
+  return settled.closed ? settled : openingPose(next);
+}
+
+function openLoopText(assembly: AssemblySpec, pose: Pose) {
+  const open = loopStates(assembly, pose).filter((loop) => !loop.closed);
+  if (!open.length) return undefined;
+  const [first] = open;
+  return `The loop at joint "${first.joint}" cannot close: its two halves stay ${(Math.round(first.gap * 100) / 100)} mm apart. Check the link lengths and the at and child_at positions${open.length > 1 ? `, here and at ${count(open.length - 1, 'more joint')}` : ''}.`;
 }
 
 function sameFiles(a: ProjectFile[], b: ProjectFile[]) {
@@ -119,7 +135,9 @@ export function App() {
     const entry = snapshot.entry ?? snapshot.active;
     try {
       const result = await engine.build(toFiles(snapshot), entry, snapshot.revision, setStage);
-      updatePose(carryPose(result.assembly, shownAssembly.current, shownPose.current));
+      const opening = carryPose(result.assembly, shownAssembly.current, shownPose.current);
+      const openLoop = opening.closed ? undefined : openLoopText(result.assembly, opening.pose);
+      updatePose(opening.pose);
       shownAssembly.current = result.assembly;
       setPreview(result);
       setBuiltRevision(snapshot.revision);
@@ -127,8 +145,9 @@ export function App() {
       if (result.isAssembly && latest.current.entry === null && latest.current.files.some((file) => file.name === entry)) {
         updateDocument({ ...latest.current, entry });
       }
+      if (openLoop) setOutputOpen(true);
       setNotice(snapshot.revision === latest.current.revision
-        ? { kind: 'success', text: builtText(result) }
+        ? (openLoop ? { kind: 'error', text: `${builtText(result)} ${openLoop}` } : { kind: 'success', text: builtText(result) })
         : { kind: 'idle', text: 'Code changed during the build. Run again to update the preview.' });
     } catch (error) {
       const diagnostic: Diagnostic = error instanceof CadError
@@ -516,7 +535,7 @@ export function App() {
         </section>
 
         <Viewport model={preview} pose={pose} stale={!currentBuild} running={stage ? stages[stage] : undefined}
-          onPose={updatePose} onResetPose={() => preview && updatePose(defaultPose(preview.assembly))}/>
+          onPose={updatePose} onResetPose={() => preview && updatePose(openingPose(preview.assembly).pose)}/>
       </main>
 
       <footer className="app-footer">
@@ -538,11 +557,13 @@ export function App() {
             <dt>Parameters</dt>
             <dd>Use OpenSCAD variables, functions, local modules, loops and conditionals. Keep the <code>.scad</code> files for future edits.</dd>
             <dt>Assemblies</dt>
-            <dd>Write each part in its own file with its pivot at the origin. In one more file, list them with <code>part("arm", "arm.scad");</code> and connect them with <code>joint("lift", type = "hinge", parent = "base", child = "arm", at = [0, 0, 30], axis = [0, 1, 0], limits = [0, 90]);</code>. Types are <code>"fixed"</code>, <code>"hinge"</code> in degrees and <code>"slider"</code> in millimetres. <code>at</code> and <code>rot</code> place the joint in the parent's coordinates. Move joints with the sliders in the preview. STEP exports the pose shown, with one named part per <code>part()</code>.</dd>
+            <dd>Write each part in its own file with its pivot at the origin. In one more file, list them with <code>part("arm", "arm.scad");</code> and connect them with <code>joint("lift", type = "hinge", parent = "base", child = "arm", at = [0, 0, 30], axis = [0, 1, 0], limits = [0, 90]);</code>. Types are <code>"fixed"</code>, <code>"hinge"</code> in degrees and <code>"slider"</code> in millimetres. <code>at</code> and <code>rot</code> place the joint in the parent's coordinates. Move joints with the sliders in the preview, or press play on one to run it through its travel. STEP exports the pose shown, with one named part per <code>part()</code>.</dd>
+            <dt>Linkages and closed loops</dt>
+            <dd>A joint between two parts that are already connected closes a loop, as the fourth hinge of a four-bar does. Give it <code>child_at = [x, y, z]</code> to say where the joint sits on the child. Moving any joint in the loop moves the others, and a move stops at a dead point. In a loop, the first joint with a <code>value</code> is held and other values are starting guesses that pick which way the linkage assembles. Open the <strong>Crank-rocker linkage</strong> example.</dd>
             <dt>Sharing values</dt>
             <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>Save project</strong> downloads every file as one file a teammate can open.</dd>
             <dt>Model limits</dt>
-            <dd>One connected solid per part file, in millimetres. A part hangs from one joint, so closed loops such as four-bar linkages are unavailable. External libraries, imports and facet overrides are unavailable. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
+            <dd>One connected solid per part file, in millimetres. Collision checks and gears are unavailable. External libraries, imports and facet overrides are unavailable. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
           </dl>
           <div className="dialog-actions">
             <a className="button button-step" href={`${import.meta.env.BASE_URL}source/partscript-cad-source.zip`} download><Download size={16}/> Download source</a>

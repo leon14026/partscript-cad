@@ -198,7 +198,7 @@ h1, h2, p { margin: 0; }
 .stale-preview { position: absolute; top: 16px; left: 14px; display: flex; align-items: center; gap: 7px; pointer-events: none; color: #e4cd9e; font-size: 11px; background: #303b47; border-radius: 4px; padding: 6px 8px; }
 .stale-preview span { display: block; width: 5px; height: 5px; border-radius: 50%; background: #e9bf6a; }
 .part-count { margin-left: 2px; padding: 2px 7px; border: 1px solid #3a4b59; border-radius: 10px; color: #b4c3cf; font: 10.5px var(--mono); }
-.joints { position: absolute; left: 13px; bottom: 13px; z-index: 1; width: 232px; max-width: calc(100% - 26px); max-height: calc(100% - 70px); display: flex; flex-direction: column; background: #202e3af2; border: 1px solid #3b4b59; border-radius: 8px; color: #dce3ea; }
+.joints { position: absolute; left: 13px; bottom: 13px; z-index: 1; width: 246px; max-width: calc(100% - 26px); max-height: calc(100% - 70px); display: flex; flex-direction: column; background: #202e3af2; border: 1px solid #3b4b59; border-radius: 8px; color: #dce3ea; }
 .joints header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 6px 5px 4px; }
 .joints-toggle, .joints-reset { display: flex; align-items: center; gap: 6px; border: 0; border-radius: 4px; background: transparent; color: #c9d4dd; font-size: 11.5px; font-weight: 590; padding: 4px 7px; }
 .joints-toggle span { padding: 0 5px; border-radius: 8px; background: #354656; color: #b9c7d2; font: 10px/15px var(--mono); }
@@ -210,9 +210,22 @@ h1, h2, p { margin: 0; }
 .joint label { display: flex; align-items: center; gap: 6px; min-width: 0; color: #d5dee6; font: 11.5px var(--mono); }
 .joint label svg { color: #8fa6b8; flex: none; }
 .joint label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.joint-value { display: flex; align-items: baseline; gap: 3px; color: #9fb0bd; font: 11px var(--mono); }
+.joint-value { display: flex; align-items: center; gap: 3px; color: #9fb0bd; font: 11px var(--mono); }
+.joint-linked { color: #e9bf6a !important; }
+.joint-play { display: grid; place-items: center; width: 20px; height: 20px; margin-right: 3px; padding: 0; border: 1px solid #3d4f5e; border-radius: 50%; background: transparent; color: #c9d4dd; }
+.joint-play:hover:not(:disabled) { background: #33475a; color: #f0f5f8; }
+.joint-play[aria-pressed='true'] { background: #e9bf6a; border-color: #e9bf6a; color: #2b2313; }
+.joint-play:disabled { opacity: 0.4; }
+.joint-play:focus-visible { outline-color: #90bfdf; outline-offset: 1px; }
+.joint-loop { display: flex; align-items: center; gap: 6px; margin-top: 9px; padding-top: 8px; border-top: 1px solid #33434f; color: #b9c7d2; font: 11px var(--mono); }
+.joint-loop + .joint-loop { margin-top: 5px; padding-top: 0; border-top: 0; }
+.joint-loop svg { color: #e9bf6a; flex: none; }
+.joint-loop span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.joint-loop i { margin-left: auto; font-style: normal; color: #8fa2b1; white-space: nowrap; }
+.joint-loop.open, .joint-loop.open i, .joint-loop.open svg { color: #f0a08c; }
 .joint-value i { font-style: normal; min-width: 17px; }
-.joint-value input { width: 62px; padding: 2px 4px; border: 1px solid #3d4f5e; border-radius: 4px; background: #17222e; color: #eef3f7; font: 11px var(--mono); text-align: right; }
+.joint-value input::-webkit-inner-spin-button, .joint-value input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.joint-value input { appearance: textfield; -moz-appearance: textfield; width: 62px; padding: 2px 4px; border: 1px solid #3d4f5e; border-radius: 4px; background: #17222e; color: #eef3f7; font: 11px var(--mono); text-align: right; }
 .joint input[type='range'] { grid-column: 1 / -1; width: 100%; height: 18px; margin: 3px 0 0; accent-color: #e9bf6a; cursor: ew-resize; }
 .joint-limits { grid-column: 1 / -1; display: flex; justify-content: space-between; color: #7f93a3; font: 9.5px var(--mono); }
 .preview-footer { border-top: 1px solid #334351; background: #202e3a; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 14px; }

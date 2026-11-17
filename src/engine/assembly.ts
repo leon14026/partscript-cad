@@ -14,8 +14,8 @@ function _ps_v(v) = is_list(v) ? [for (x = v) _ps_n(x)] : v;
 module part(name = undef, file = undef, at = [0, 0, 0], rot = [0, 0, 0], color = undef) {
     echo(["@partscript", "part", name, file, _ps_v(at), _ps_v(rot), _ps_v(color)]);
 }
-module joint(name = undef, type = "fixed", parent = undef, child = undef, at = [0, 0, 0], rot = [0, 0, 0], axis = [0, 0, 1], limits = undef, value = undef) {
-    echo(["@partscript", "joint", name, type, parent, child, _ps_v(at), _ps_v(rot), _ps_v(axis), _ps_v(limits), _ps_n(value)]);
+module joint(name = undef, type = "fixed", parent = undef, child = undef, at = [0, 0, 0], rot = [0, 0, 0], axis = [0, 0, 1], limits = undef, value = undef, child_at = [0, 0, 0], child_rot = [0, 0, 0]) {
+    echo(["@partscript", "joint", name, type, parent, child, _ps_v(at), _ps_v(rot), _ps_v(axis), _ps_v(limits), _ps_n(value), _ps_v(child_at), _ps_v(child_rot)]);
 }
 `;
 
@@ -40,15 +40,20 @@ export interface JointSpec {
   type: JointType;
   parent: string;
   child: string;
-  /** Joint frame in the parent part's coordinates. The child's origin sits on it. */
+  /** Joint frame in the parent part's coordinates. */
   at: Vec3;
   rot: Vec3;
+  /** The same joint frame in the child part's coordinates. The child's origin by default. */
+  childAt: Vec3;
+  childRot: Vec3;
   /** Motion axis in the joint frame. Unit length. */
   axis: Vec3;
   /** Travel limits: degrees for a hinge, millimetres for a slider. */
   limits: [number, number];
   /** Value the model opens with. */
   value: number;
+  /** True when the code set value. In a loop the first such joint is held and the others are starting guesses. */
+  given: boolean;
 }
 
 export interface AssemblySpec {
@@ -202,6 +207,8 @@ export function readAssembly(records: string[]): AssemblySpec {
       const norm = Math.hypot(...rawAxis);
       if (norm < 1e-9) fail(what, 'axis needs a direction such as [0, 0, 1].');
       const axis = rawAxis.map((v) => v / norm) as Vec3;
+      const childAt = vector(fields[11], what, 'child_at') as Vec3;
+      const childRot = vector(fields[12], what, 'child_rot') as Vec3;
 
       let limits: [number, number] = type === 'hinge' ? [-180, 180] : [0, 0];
       if (fields[9] !== null) {
@@ -217,33 +224,26 @@ export function readAssembly(records: string[]): AssemblySpec {
         value = number(fields[10], what, 'value');
         if (value < limits[0] - 1e-9 || value > limits[1] + 1e-9) fail(what, `value ${value} is outside limits [${limits[0]}, ${limits[1]}].`);
       }
-      joints.push({ name, type, parent, child, at, rot, axis, limits, value });
+      joints.push({ name, type, parent, child, at, rot, childAt, childRot, axis, limits, value, given: fields[10] !== null });
     }
   }
 
   if (!parts.length) throw new CadError('The assembly has joints and no parts. Add part("name", "file.scad") for each part.');
   const names = new Set(parts.map((item) => item.name));
-  const carrier = new Map<string, JointSpec>();
   for (const item of joints) {
     const what = `joint("${item.name}")`;
     if (!names.has(item.parent)) fail(what, `parent "${item.parent}" is not a part. Declare it with part().`);
     if (!names.has(item.child)) fail(what, `child "${item.child}" is not a part. Declare it with part().`);
     if (item.parent === item.child) fail(what, 'parent and child must be different parts.');
-    const other = carrier.get(item.child);
-    if (other) fail(what, `"${item.child}" is already carried by joint("${other.name}"). A part can hang from one joint. Closed loops are unavailable in this version.`);
-    if (placed.has(item.child)) fail(what, `"${item.child}" also has at or rot on its part() line. Place it with the joint's at and rot.`);
-    carrier.set(item.child, item);
   }
-  for (const item of joints) {
-    let current = item.parent;
-    for (let steps = 0; carrier.has(current); steps++) {
-      current = carrier.get(current)!.parent;
-      if (current === item.child || steps > joints.length) {
-        fail(`joint("${item.name}")`, 'the joints form a loop. Each part must lead back to a part that no joint carries.');
-      }
+  const assembly = { parts, joints };
+  const { carrier } = structureOf(assembly);
+  parts.forEach((part, i) => {
+    if (carrier[i] >= 0 && placed.has(part.name)) {
+      fail(`joint("${joints[carrier[i]].name}")`, `"${part.name}" also has at or rot on its part() line. Place it with the joint's at and rot.`);
     }
-  }
-  return { parts, joints };
+  });
+  return assembly;
 }
 
 /** A single part file is shown and exported as an assembly of one part. */
@@ -285,41 +285,179 @@ export function placement(at: Vec3, rot: Vec3): Matrix {
   return turn;
 }
 
+/** Inverse of a rigid transform. */
+export function invert(m: Matrix): Matrix {
+  return [m[0], m[4], m[8], -(m[0] * m[3] + m[4] * m[7] + m[8] * m[11]),
+    m[1], m[5], m[9], -(m[1] * m[3] + m[5] * m[7] + m[9] * m[11]),
+    m[2], m[6], m[10], -(m[2] * m[3] + m[6] * m[7] + m[10] * m[11])];
+}
+
+/** A hinge that may turn a full revolution has no end stops. */
+export function turnsFully(joint: JointSpec) {
+  return joint.type === 'hinge' && joint.limits[1] - joint.limits[0] >= 360 - 1e-9;
+}
+
 export function clampJoint(joint: JointSpec, value: number | undefined) {
   if (joint.type === 'fixed') return 0;
   if (typeof value !== 'number' || !Number.isFinite(value)) return joint.value;
-  return Math.min(joint.limits[1], Math.max(joint.limits[0], value));
+  const [low, high] = joint.limits;
+  if (value >= low && value <= high) return value;
+  if (turnsFully(joint)) return low + ((((value - low) % 360) + 360) % 360);
+  return Math.min(high, Math.max(low, value));
+}
+
+/**
+ * How the joints connect the parts. Joints are read in the order they are
+ * written. A joint that links two groups of parts not yet connected carries
+ * one from the other. A joint between parts that are already connected closes
+ * a loop: it adds no freedom, and the joints around the loop must move
+ * together to keep it shut.
+ */
+export interface Structure {
+  /** Parts that no joint carries. */
+  roots: number[];
+  /** Carried parts in the order they can be placed. `reversed` means the joint's child carries its parent. */
+  edges: { joint: number; part: number; from: number; reversed: boolean }[];
+  /** For each part, the joint that carries it, or -1 for a root. */
+  carrier: number[];
+  /** Joints that close a loop. */
+  closures: number[];
+  /** For each closing joint, the carrying joints around its loop. */
+  cycles: number[][];
+  /** For each joint, true when it carries a part and lies on a loop. */
+  looped: boolean[];
+  /** Joint frames: in the parent, in the child, and their inverses. */
+  frames: { parent: Matrix; child: Matrix; parentInverse: Matrix; childInverse: Matrix }[];
+  /** Typical size of the mechanism in mm. It makes angle errors comparable with distances. */
+  scale: number;
+}
+
+const structures = new WeakMap<AssemblySpec, Structure>();
+
+export function structureOf(assembly: AssemblySpec): Structure {
+  const known = structures.get(assembly);
+  if (known) return known;
+  const { parts, joints } = assembly;
+  const index = new Map(parts.map((part, i) => [part.name, i]));
+  const group = parts.map((_, i) => i);
+  const find = (i: number): number => (group[i] === i ? i : (group[i] = find(group[i])));
+
+  const links: { joint: number; other: number; reversed: boolean }[][] = parts.map(() => []);
+  const carries = joints.map(() => false);
+  const closures: number[] = [];
+  joints.forEach((joint, j) => {
+    const parent = index.get(joint.parent)!;
+    const child = index.get(joint.child)!;
+    if (find(parent) === find(child)) {
+      closures.push(j);
+      return;
+    }
+    group[find(parent)] = find(child);
+    carries[j] = true;
+    links[parent].push({ joint: j, other: child, reversed: false });
+    links[child].push({ joint: j, other: parent, reversed: true });
+  });
+
+  // Each connected group stands on its first part that is nobody's child.
+  const isChild = parts.map(() => false);
+  joints.forEach((joint, j) => {
+    if (carries[j]) isChild[index.get(joint.child)!] = true;
+  });
+  const roots: number[] = [];
+  const rooted = new Set<number>();
+  parts.forEach((_, i) => {
+    if (isChild[i] || rooted.has(find(i))) return;
+    rooted.add(find(i));
+    roots.push(i);
+  });
+
+  const carrier = parts.map(() => -1);
+  const from = parts.map(() => -1);
+  const edges: Structure['edges'] = [];
+  const queue = [...roots];
+  const seen = new Set(roots);
+  for (let head = 0; head < queue.length; head++) {
+    const current = queue[head];
+    for (const link of links[current]) {
+      if (seen.has(link.other)) continue;
+      seen.add(link.other);
+      carrier[link.other] = link.joint;
+      from[link.other] = current;
+      edges.push({ joint: link.joint, part: link.other, from: current, reversed: link.reversed });
+      queue.push(link.other);
+    }
+  }
+
+  const looped = joints.map(() => false);
+  const ancestors = (part: number) => {
+    const chain = [part];
+    while (from[chain[chain.length - 1]] >= 0) chain.push(from[chain[chain.length - 1]]);
+    return chain;
+  };
+  const cycles = closures.map((j) => {
+    const up = ancestors(index.get(joints[j].parent)!);
+    const down = ancestors(index.get(joints[j].child)!);
+    // Drop the shared tail: what remains is the path between the two parts.
+    while (up.length && down.length && up[up.length - 1] === down[down.length - 1]) {
+      up.pop();
+      down.pop();
+    }
+    const cycle = [...up, ...down].map((part) => carrier[part]);
+    for (const joint of cycle) looped[joint] = true;
+    return cycle;
+  });
+
+  const frames = joints.map((joint) => {
+    const parent = placement(joint.at, joint.rot);
+    const child = placement(joint.childAt, joint.childRot);
+    return { parent, child, parentInverse: invert(parent), childInverse: invert(child) };
+  });
+  const reach = joints.flatMap((joint) => [Math.hypot(...joint.at), Math.hypot(...joint.childAt)]);
+  const result = { roots, edges, carrier, closures, cycles, looped, frames, scale: Math.max(10, ...reach) };
+  structures.set(assembly, result);
+  return result;
+}
+
+/** How a joint moves the child's joint frame from the parent's, at a given value. */
+export function jointMotion(joint: JointSpec, value: number): Matrix {
+  if (joint.type === 'hinge') return axisRotation(joint.axis, value);
+  if (joint.type === 'slider') return [1, 0, 0, joint.axis[0] * value, 0, 1, 0, joint.axis[1] * value, 0, 0, 1, joint.axis[2] * value];
+  return identity;
+}
+
+/** World transform of every part for one value per joint. Values of closing joints are not used. */
+export function placeParts(assembly: AssemblySpec, values: number[]): Matrix[] {
+  const { roots, edges, frames } = structureOf(assembly);
+  const world = new Array<Matrix>(assembly.parts.length);
+  for (const root of roots) world[root] = placement(assembly.parts[root].at, assembly.parts[root].rot);
+  for (const edge of edges) {
+    const joint = assembly.joints[edge.joint];
+    const frame = frames[edge.joint];
+    const motion = jointMotion(joint, values[edge.joint]);
+    world[edge.part] = edge.reversed
+      ? multiply(world[edge.from], multiply(frame.child, multiply(invert(motion), frame.parentInverse)))
+      : multiply(world[edge.from], multiply(frame.parent, multiply(motion, frame.childInverse)));
+  }
+  return world;
+}
+
+export function jointValues(assembly: AssemblySpec, pose: Pose = {}) {
+  return assembly.joints.map((joint) => clampJoint(joint, pose[joint.name]));
+}
+
+/** The joints that have a value to set: every moving joint that carries a part. */
+export function movingJoints(assembly: AssemblySpec) {
+  const { closures } = structureOf(assembly);
+  return assembly.joints.filter((joint, j) => joint.type !== 'fixed' && !closures.includes(j));
 }
 
 export function defaultPose(assembly: AssemblySpec): Pose {
-  return Object.fromEntries(assembly.joints.filter((item) => item.type !== 'fixed').map((item) => [item.name, item.value]));
+  return Object.fromEntries(movingJoints(assembly).map((item) => [item.name, item.value]));
 }
 
 /** World transform of every part, in the order of assembly.parts. */
 export function solvePose(assembly: AssemblySpec, pose: Pose = {}): Matrix[] {
-  const carrier = new Map(assembly.joints.map((item) => [item.child, item]));
-  const byName = new Map(assembly.parts.map((item) => [item.name, item]));
-  const solved = new Map<string, Matrix>();
-
-  function world(name: string): Matrix {
-    const known = solved.get(name);
-    if (known) return known;
-    const joint = carrier.get(name);
-    let result: Matrix;
-    if (!joint) {
-      const part = byName.get(name)!;
-      result = placement(part.at, part.rot);
-    } else {
-      const value = clampJoint(joint, pose[joint.name]);
-      const motion = joint.type === 'hinge' ? axisRotation(joint.axis, value)
-        : joint.type === 'slider' ? placement(joint.axis.map((v) => v * value) as Vec3, [0, 0, 0])
-          : identity;
-      result = multiply(world(joint.parent), multiply(placement(joint.at, joint.rot), motion));
-    }
-    solved.set(name, result);
-    return result;
-  }
-  return assembly.parts.map((item) => world(item.name));
+  return placeParts(assembly, jointValues(assembly, pose));
 }
 
 /** Box around a part's bounds after a transform. */
