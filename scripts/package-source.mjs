@@ -4,7 +4,7 @@ import { zipSync } from 'fflate';
 
 const archive = {};
 const releasePaths = ['index.html', 'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts',
-  'README.md', 'LICENSE', '.gitignore', '.github', 'public', 'src', 'scripts', 'test'];
+  'README.md', 'CLAUDE.md', 'LICENSE', '.gitignore', '.github', 'docs', 'public', 'src', 'scripts', 'test'];
 
 async function add(path) {
   const entries = await readdir(path, { withFileTypes: true }).catch((error) => {
