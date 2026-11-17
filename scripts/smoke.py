@@ -87,6 +87,20 @@ with sync_playwright() as p:
     page.wait_for_timeout(300)
     page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}faceted.png"))
     print(f'faceted hull: {notice}')
+
+    # Parts written in place, joined by a hinge, with no part files at all.
+    page.click('.cm-content')
+    page.keyboard.press('Control+A')
+    page.keyboard.type('part("base") cube([30, 30, 4]); part("arm") cube([4, 4, 30]); joint("swing", type = "hinge", parent = "base", child = "arm", at = [15, 15, 4], axis = [0, 1, 0], limits = [0, 90]);', delay=5)
+    page.keyboard.press('Control+Enter')
+    page.wait_for_timeout(200)
+    page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
+    notice = page.inner_text('.output-message').replace('\n', ' ')
+    if 'Built 2 parts and 1 joint' not in notice or not page.locator('.joint-play:not([disabled])').count():
+        problems.append(f'inline parts: {notice}')
+    page.wait_for_timeout(300)
+    page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}inline.png"))
+    print(f'inline parts: {notice}')
     browser.close()
 
 server.shutdown()

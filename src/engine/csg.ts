@@ -152,7 +152,7 @@ const drawing = new Set([...solids, ...flat, 'polyhedron', 'import', 'surface'])
 const exact = new Set([...solids, 'multmatrix', 'group', 'union', 'difference', 'intersection', 'color', 'render']);
 
 /** The tag number of an inline part's render node, or undefined for any other node. */
-export function partTag(node: CsgNode): number | undefined {
+export function nodeTag(node: CsgNode): number | undefined {
   if (node.operation !== 'render') return undefined;
   const convexity = node.named.get('convexity');
   return typeof convexity === 'number' && convexity >= partTagBase ? convexity : undefined;
@@ -164,7 +164,7 @@ export function partTag(node: CsgNode): number | undefined {
  */
 export function hasShapes(nodes: CsgNode[], skipParts = false): boolean {
   return nodes.some((node) => {
-    if (skipParts && partTag(node) !== undefined) return false;
+    if (skipParts && nodeTag(node) !== undefined) return false;
     return drawing.has(node.operation) || hasShapes(node.children, skipParts);
   });
 }
@@ -229,7 +229,7 @@ const transparent = new Set(['group', 'union', 'color']);
 export function taggedParts(nodes: CsgNode[], wrapper?: string): TaggedPart[] {
   const found: TaggedPart[] = [];
   for (const node of nodes) {
-    const tag = partTag(node);
+    const tag = nodeTag(node);
     if (tag !== undefined) found.push({ tag, node, wrapper });
     else found.push(...taggedParts(node.children, wrapper ?? (transparent.has(node.operation) ? undefined : node.operation)));
   }

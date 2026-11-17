@@ -11,8 +11,10 @@ import { CadError, type Pose, type Vec3 } from './protocol.ts';
 export const assemblyPrelude = `
 function _ps_n(x) = is_num(x) ? [floor(x), round((x - floor(x)) * 1000000)] : x;
 function _ps_v(v) = is_list(v) ? [for (x = v) _ps_n(x)] : v;
+function _ps_hash(s, i = 0, a = 7) = i >= len(s) ? a : _ps_hash(s, i + 1, (a * 31 + ord(s[i])) % 99991);
 module part(name = undef, file = undef, at = [0, 0, 0], rot = [0, 0, 0], color = undef) {
-    echo(["@partscript", "part", name, file, _ps_v(at), _ps_v(rot), _ps_v(color)]);
+    echo(["@partscript", "part", name, file, _ps_v(at), _ps_v(rot), _ps_v(color), $children]);
+    if ($children > 0) render(convexity = 900000 + _ps_hash(is_string(name) ? name : "")) children();
 }
 module joint(name = undef, type = "fixed", parent = undef, child = undef, at = [0, 0, 0], rot = [0, 0, 0], axis = [0, 0, 1], limits = undef, value = undef, child_at = [0, 0, 0], child_rot = [0, 0, 0]) {
     echo(["@partscript", "joint", name, type, parent, child, _ps_v(at), _ps_v(rot), _ps_v(axis), _ps_v(limits), _ps_n(value), _ps_v(child_at), _ps_v(child_rot)]);
@@ -21,6 +23,18 @@ module joint(name = undef, type = "fixed", parent = undef, child = undef, at = [
 
 export const recordMarker = '["@partscript"';
 
+/**
+ * The number part() puts in the convexity of the render node around an inline
+ * part's shapes. It is 900000 plus a hash of the name, so the shapes can be
+ * found in OpenSCAD's output and matched to their part(). Keep it in step with
+ * _ps_hash in the prelude above.
+ */
+export function partTag(name: string): number {
+  let hash = 7;
+  for (const character of name) hash = (hash * 31 + character.codePointAt(0)!) % 99991;
+  return 900_000 + hash;
+}
+
 export type JointType = 'fixed' | 'hinge' | 'slider';
 export type Color = [number, number, number];
 /** 3x4 row-major rigid transform: [r00,r01,r02,tx, r10,r11,r12,ty, r20,r21,r22,tz]. */
@@ -28,11 +42,16 @@ export type Matrix = number[];
 
 export interface PartSpec {
   name: string;
-  file: string;
+  /** The part file. Undefined for an inline part, whose shapes are written in braces after part(). */
+  file?: string;
+  /** True when the shapes are written in braces in the assembly file. */
+  inline: boolean;
   /** Placement of a part that no joint carries. */
   at: Vec3;
   rot: Vec3;
   color: Color;
+  /** True when part() was given a color. Otherwise the first color() in the shapes is used, if there is one. */
+  colorGiven: boolean;
 }
 
 export interface JointSpec {
@@ -185,12 +204,19 @@ export function readAssembly(records: string[]): AssemblySpec {
       const name = text(fields[2], what, 'name');
       if (!namePattern.test(name)) fail(what, 'names use letters, digits, _ . and -, and start with a letter.');
       if (parts.some((item) => item.name === name)) fail(what, 'this name is used twice. Give every part its own name.');
-      const file = text(fields[3], what, 'file name');
-      if (!fileNamePattern.test(file)) fail(what, `"${file}" is not a project file name. Use a name such as "arm.scad".`);
+      const children = typeof fields[7] === 'number' ? fields[7] : 0;
+      let file: string | undefined;
+      if (fields[3] === null) {
+        if (!children) fail(what, 'give it a file name or shapes in braces.');
+      } else {
+        if (children) fail(what, 'it has both a file and shapes in braces. Use one.');
+        file = text(fields[3], what, 'file name');
+        if (!fileNamePattern.test(file)) fail(what, `"${file}" is not a project file name. Use a name such as "arm.scad".`);
+      }
       const at = vector(fields[4], what, 'at') as Vec3;
       const rot = vector(fields[5], what, 'rot') as Vec3;
       if (at.some((v) => v !== 0) || rot.some((v) => v !== 0)) placed.add(name);
-      parts.push({ name, file, at, rot, color: color(fields[6], what, parts.length) });
+      parts.push({ name, file, inline: file === undefined, at, rot, color: color(fields[6], what, parts.length), colorGiven: fields[6] !== null });
       if (parts.length > maxParts) throw new CadError(`An assembly can hold ${maxParts} parts.`);
     } else if (fields[1] === 'joint') {
       const what = typeof fields[2] === 'string' && fields[2] ? `joint("${fields[2]}")` : `joint() number ${joints.length + 1}`;
@@ -228,7 +254,7 @@ export function readAssembly(records: string[]): AssemblySpec {
     }
   }
 
-  if (!parts.length) throw new CadError('The assembly has joints and no parts. Add part("name", "file.scad") for each part.');
+  if (!parts.length) throw new CadError('The assembly has joints and no parts. Add part("name", "file.scad") or part("name") { shapes } for each part.');
   const names = new Set(parts.map((item) => item.name));
   for (const item of joints) {
     const what = `joint("${item.name}")`;
@@ -248,7 +274,7 @@ export function readAssembly(records: string[]): AssemblySpec {
 
 /** A single part file is shown and exported as an assembly of one part. */
 export function singlePart(file: string): AssemblySpec {
-  return { parts: [{ name: file.replace(/\.scad$/i, ''), file, at: [0, 0, 0], rot: [0, 0, 0], color: palette[0] }], joints: [] };
+  return { parts: [{ name: file.replace(/\.scad$/i, ''), file, inline: false, at: [0, 0, 0], rot: [0, 0, 0], color: palette[0], colorGiven: false }], joints: [] };
 }
 
 export const identity: Matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];

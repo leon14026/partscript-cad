@@ -12,6 +12,12 @@ Written 16 November 2026 for whoever continues this project, human or model. It 
 
 Phases 1 and 2 come first, in that order. After them, phases 3 to 7 are independent and can be done in any order. Each phase ends in a working, tested, releasable site.
 
+### Status
+
+- **Phase 1: done (17 November 2026).** Differences from the text below, so later phases read true: `BuiltModel.solids` is now `BuiltModel.entries` (each an exact solid or a faceted mesh, see `CachedSolid` in `build.ts`). `unsupported()` returns a descriptive reason, for example `hull`, `scale` or `cylinder with $fn`. `meshToSolid` in `solid.ts` uses `sew` and `makeSolid` per shell, not `sewAndSolidify` (F18). `summary.ts` holds the sentence about faceted parts. The tests are `test/mesh.test.ts` and `test/faceted.test.ts`.
+- **Phase 2: done (17 November 2026).** `partTag(name)` in `assembly.ts` is the hash. `nodeTag(node)` in `csg.ts` reads a render node's tag. `PartSpec` gained `inline` and `colorGiven`, and `file` is optional. A part wrapped in `translate()` or another operation is an error. The tests are the last six in `test/assembly.test.ts`.
+- Phases 3 to 7: not started.
+
 Phase 5 is the hardest. If a smaller model gets stuck there, hand that phase to a stronger one. Everything else is routine once the design below is followed.
 
 ---
@@ -66,20 +72,22 @@ kinematics.ts settles loops -> Viewport.tsx -> viewer.ts (WebGL) or softwarePrev
 | `src/engine/scad.ts` | `checkProject` (source checks), `evaluateScad` (one OpenSCAD run: files in, CSG text + ECHO lines out). Appends the prelude to the entry file. |
 | `src/engine/assembly.ts` | The prelude (`part()`, `joint()` as OpenSCAD modules that `echo` records), record reader and validation, `structureOf` (which joints carry parts, which close loops), matrices, `solvePose`. |
 | `src/engine/kinematics.ts` | Loop solver (Levenberg-Marquardt), `moveJoint`, `advanceJoint`, `settlePose`, `openingPose`, `loopStates`. Runs on the page, not in the worker. |
-| `src/engine/csg.ts` | Parser for OpenSCAD's CSG dump. Today it accepts 8 node kinds and throws on anything else. |
-| `src/engine/solid.ts` | CSG tree to OCCT solid (`buildSolid`), preview mesh (`previewSolid`), STEP writers (`writeStep`, `writeAssemblyStep`). |
-| `src/engine/build.ts` | `ModelBuilder`: orchestrates a build, caches solids by CSG text, exports STEP. |
+| `src/engine/csg.ts` | Parser for OpenSCAD's CSG dump. Reads every node with its character range. `unsupported()` says which parts the exact builder cannot make. `taggedParts`, `childrenText`, `firstColor` serve inline parts. |
+| `src/engine/mesh.ts` | Pure TypeScript triangle meshes: binary STL reader, volume, bounds, and `toPartMesh` (flat-shaded triangles plus feature edges). |
+| `src/engine/solid.ts` | CSG tree to OCCT solid (`buildSolid`), preview mesh (`previewSolid`), faceted mesh to solid (`meshToSolid`), STEP writers (`writeStep`, `writeAssemblyStep`). |
+| `src/engine/summary.ts` | The sentence and tooltip that name faceted parts. |
+| `src/engine/build.ts` | `ModelBuilder`: orchestrates a build, caches solids by CSG text, exports STEP. A part is built exact or faceted. |
 | `src/engine/geometry.worker.ts`, `client.ts` | Worker entry and its page-side client (one job at a time, 60 s timeout, cancel). |
 | `src/components/viewer.ts`, `softwarePreview.ts` | three.js viewer, and a CPU renderer used when WebGL2 is missing. Both draw one mesh per part with a matrix. |
 | `src/components/Viewport.tsx` | Preview pane, joint sliders, play button, loop status. |
 | `src/App.tsx`, `project.ts`, `drafts.ts` | Shell: file tabs, run, export, open/save, autosave to IndexedDB. |
 | `src/examples.ts`, `assemblyExample.ts`, `linkageExample.ts` | Example projects. |
-| `test/*.test.ts` | Node tests that run both WASM engines. `geometry` (single parts), `assembly` (joints, STEP round trip), `loops` (solver). |
+| `test/*.test.ts` | Node tests that run both WASM engines. `geometry` (single parts), `faceted` (meshed parts), `mesh` (pure functions), `assembly` (joints, inline parts, STEP round trip), `loops` (solver). |
 
 ### The assembly language today
 
 ```scad
-part(name, file, at = [0,0,0], rot = [0,0,0], color = undef);
+part(name, file, at = [0,0,0], rot = [0,0,0], color = undef);   // or part(name) { shapes }, no file
 joint(name, type = "fixed" | "hinge" | "slider", parent, child,
       at, rot,              // joint frame in the parent's coordinates
       child_at, child_rot,  // the same frame in the child's coordinates (default: child origin)
@@ -115,6 +123,9 @@ These were run in Node against the engines in this repository (OpenSCAD `2025.03
 | F17 | `kernel.scale` returns an invalid shape with zero volume. `kernel.transform` with a uniformly scaled matrix works and keeps flat faces flat. `kernel.generalTransform` handles unequal scales but turns every face into a spline surface. | Unit box scaled by 2: `scale` invalid, `transform` volume 8 with plane faces, `generalTransform` volume 8 with spline faces. |
 
 | F18 | `sewAndSolidify` returns **no solid** when the mesh holds more than one body (10 shells, 0 solids). `sew` followed by `makeSolid` on each shell works. The collapsed triangles OpenSCAD's mesh contains (656 of 31,216 for the v4 machine) are dropped by `importStl` and do no harm. | Whole v4 machine as one part: faceted, 30,558 triangles, build 1.0 s. STEP export 20 s (sew 7 s, merge 9 s), 30.5 MiB, 8,105 faces, re-imports as 10 valid solids with volume 709,384.0 against the mesh's 709,383.97. The largest body alone (23,028 triangles) takes 9 s, so conversion time grows faster than the triangle count. |
+
+| F19 | `include <lib.scad>` followed by `part = "none";` in the entry file is silent under `--hardwarnings` and leaves an empty dump (`group();`). The recipe of phase 2 works as written. | `test/assembly.test.ts`, library fixture. |
+| F20 | The owner's v4 file included from an assembly with five inline parts (drum body, drum cap, spacer, drive plate, chute): one evaluation plus one mesh run per part, all faceted (`linear_extrude`). First build 0.7 s, unchanged rebuild 88 ms with one OpenSCAD run, editing a drum parameter rebuilds one part. STEP assembly 11.6 MiB in 6.2 s, five solids. | Scratch script, not in the repository. |
 
 ### Dump syntax by example
 
@@ -187,7 +198,7 @@ const prism = kernel.extrude(kernel.makeFace(wire), 0, 0, height);
 
 ---
 
-## Phase 1. Any OpenSCAD geometry builds
+## Phase 1. Any OpenSCAD geometry builds (done)
 
 **Result for the user:** every part file that OpenSCAD can render now shows up and exports to STEP. Parts built from boxes, cylinders and spheres stay exact, as today. Any other part is *faceted*: a valid solid with flat faces. The build output says which parts are which, and why.
 
@@ -305,7 +316,7 @@ Unit-test `mesh.ts` on its own: a hand-written 12-triangle cube gives volume 1, 
 
 ---
 
-## Phase 2. Many parts from one file
+## Phase 2. Many parts from one file (done)
 
 **Result for the user:** an assembly file can define parts in place, so a design kept in one `.scad` file with many modules becomes a moving assembly without being split up:
 

@@ -40,9 +40,33 @@ joint("lift", type = "hinge", parent = "base", child = "arm",
       limits = [0, 90], value = 30);
 ```
 
-`part(name, file, at, rot, color)` adds one part. Two parts can use the same file. `at` and `rot` place a part that no joint carries. `joint(name, type, parent, child, at, rot, axis, limits, value)` hangs the child from the parent. `at` and `rot` give the joint's position and orientation in the parent's coordinates, in the same order as `translate(at) rotate(rot)`, and the child's origin sits on the joint. `type` is `"fixed"`, `"hinge"` (turns about `axis`, in degrees) or `"slider"` (moves along `axis`, in millimetres). `limits` bounds the travel and `value` is the pose the model opens in.
+`part(name, file, at, rot, color)` adds one part; the shapes can also be written in braces, as below. Two parts can use the same file. `at` and `rot` place a part that no joint carries. `joint(name, type, parent, child, at, rot, axis, limits, value)` hangs the child from the parent. `at` and `rot` give the joint's position and orientation in the parent's coordinates, in the same order as `translate(at) rotate(rot)`, and the child's origin sits on the joint. `type` is `"fixed"`, `"hinge"` (turns about `axis`, in degrees) or `"slider"` (moves along `axis`, in millimetres). `limits` bounds the travel and `value` is the pose the model opens in.
 
 The preview shows a slider for each moving joint. Moving a joint repositions the built parts and recalculates no geometry, so it stays quick on integrated graphics and in the software preview. **Export STEP** writes an assembly with one named, coloured component per part, in the pose shown. STEP carries the positions and not the joints.
+
+### Parts written in place
+
+A part does not need its own file. Put its shapes in braces after `part()`:
+
+```scad
+part("base") cube([40, 30, 6]);
+part("arm", color = "#c0604c") { translate([0, 0, 6]) cube([8, 8, 40]); }
+part("motor", "nema17.scad");        // a part from its own file still works
+```
+
+Give `part()` a file or braces, not both. A shape drawn outside every `part()` is an error. Do not wrap a `part()` call in `translate()` or another operation; put the move inside the braces, or use `at` and `rot`. A part's shapes are taken as written, so its origin is the file's origin, and a joint places that origin (or `child_at`). If the braces hold a `color()`, the part takes that colour unless `part()` is given one. Two parts with identical shapes share one solid.
+
+This also turns a design kept in one file into an assembly without splitting it up. Include the file, assign `part = "none"` after the include so the file draws nothing of its own, and call its modules inside `part()`:
+
+```scad
+include <machine.scad>               // draws one thing at a time, chosen by a variable called part
+part = "none";                       // the last assignment wins
+
+part("drum") { drum_body(); translate([0, 0, drum_length]) drum_cap(); }
+part("coupler") coupler();
+```
+
+All the inline parts come from a single evaluation of the file, however many there are. A part that is faceted adds one short meshing run when it changes. An edit rebuilds only the parts whose shapes changed.
 
 Shared dimensions go in a file such as `params.scad` that each part starts with `include <params.scad>`. Pin a tab to keep **Run** building the assembly while a part file is open. An edit rebuilds the solids whose geometry changed and reuses the rest.
 

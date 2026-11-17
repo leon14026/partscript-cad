@@ -188,3 +188,114 @@ test('assembly mistakes are explained', async () => {
   await assert.rejects(builder.build({ 'main.scad': 'use <MCAD/boxes.scad>\ncube(1);' }, 'main.scad'), /External libraries/);
   await assert.rejects(builder.build({ 'main.scad': 'include <lib.scad>\ncube(w);', 'lib.scad': 'w = ;' }, 'main.scad'), { file: 'lib.scad', line: 1 });
 });
+
+// Inline parts: shapes written in braces after part(), in the assembly file itself.
+
+test('inline parts and a file part work together, with a joint between them', async () => {
+  const fresh = new ModelBuilder(kernel, openScad);
+  const files = {
+    'post.scad': 'cube([4, 4, 20]);',
+    'main.scad': `
+      part("base") cube([20, 20, 5]);
+      part("arm") cube([5, 5, 30]);
+      part("post", "post.scad");
+      joint("swing", type = "hinge", parent = "base", child = "arm", at = [10, 10, 5], axis = [0, 1, 0], limits = [0, 90]);
+      joint("mount", parent = "arm", child = "post", at = [0, 0, 30]);
+    `,
+  };
+  const model = await fresh.build(files, 'main.scad');
+  const { assembly, meshes, partMesh } = model.preview;
+  assert.deepEqual(assembly.parts.map((part) => [part.name, part.inline]), [['base', true], ['arm', true], ['post', false]]);
+  assert.deepEqual(meshes.map((mesh) => Math.round(mesh.volume)), [2000, 750, 320]);
+  assert.deepEqual(partMesh, [0, 1, 2]);
+  assert.equal(model.preview.rebuilt, 3);
+  // Swung by 90 degrees about +Y, the arm lies along +X and carries the post to its end.
+  const swung = solvePose(assembly, { swing: 90 });
+  near(swung[2][3], 40);
+  near(swung[2][7], 10);
+  near(swung[2][11], 5);
+  const step = new TextDecoder().decode(fresh.exportStep(model, { swing: 90 }));
+  assert.equal(step.match(/NEXT_ASSEMBLY_USAGE_OCCURRENCE\s*\(/g)?.length, 3);
+  for (const name of ['base', 'arm', 'post']) assert.ok(step.includes(`'${name}'`), `Expected ${name} in STEP`);
+});
+
+test('inline parts with the same shapes share one mesh, and a loop can make parts', async () => {
+  const fresh = new ModelBuilder(kernel, openScad);
+  const same = await fresh.build({ 'main.scad': 'part("l") cube(3); part("r", at = [10, 0, 0]) cube(3);' }, 'main.scad');
+  assert.deepEqual(same.preview.partMesh, [0, 0]);
+  assert.equal(same.preview.meshes.length, 1);
+  assert.equal(same.preview.rebuilt, 1);
+
+  const wheels = await fresh.build({ 'main.scad': 'for (i = [0 : 1]) part(str("wheel_", i), at = [5 * i, 0, 0]) cylinder(h = 2, r = 1 + i);' }, 'main.scad');
+  assert.deepEqual(wheels.preview.assembly.parts.map((part) => part.name), ['wheel_0', 'wheel_1']);
+  near(wheels.preview.meshes[0].volume, Math.PI * 2, 1e-6);
+  near(wheels.preview.meshes[1].volume, Math.PI * 4 * 2, 1e-6);
+});
+
+test('a color() inside the braces colours the part unless part() gives one', async () => {
+  const model = await builder.build({ 'main.scad': `
+    part("orchid") color("orchid") cube(2);
+    part("given", color = "#102030") color("red") cube(3);
+    part("plain") cube(4);
+  ` }, 'main.scad');
+  const [orchid, given, plain] = model.preview.assembly.parts;
+  [0.854902, 0.439216, 0.839216].forEach((channel, i) => near(orchid.color[i], channel, 1e-6));
+  assert.deepEqual(given.color.map((c) => Math.round(c * 255)), [0x10, 0x20, 0x30]);
+  assert.equal(plain.colorGiven, false);
+  assert.ok(plain.color.every((channel) => channel > 0 && channel < 1), 'the palette colour is kept');
+});
+
+test('a design kept in one library file becomes an assembly with part = "none", in one OpenSCAD run', async () => {
+  const library = `
+    part = "a";               // the file draws one thing at a time, like a customizer design
+    size = 5;
+    module block() cube(size);
+    module ball() sphere(3);
+    module rod() cylinder(h = 20, r = 1);
+    module slab() cube([10, 10, 1]);
+    module cap() translate([0, 0, 1]) cube(2);
+    if (part == "a") block(); else if (part == "b") ball(); else if (part == "c") rod();
+  `;
+  const main = (extra = '') => `
+    include <lib.scad>
+    part = "none";
+    part("block") block();
+    part("ball") ball();
+    part("rod") rod();
+    part("slab") slab();
+    part("cap") cap();${extra}
+  `;
+  let runs = 0;
+  const counting = new ModelBuilder(kernel, (options) => {
+    runs++;
+    return openScad(options);
+  });
+  const model = await counting.build({ 'lib.scad': library, 'main.scad': main() }, 'main.scad');
+  assert.equal(runs, 1, 'every inline part comes from the one evaluation');
+  assert.deepEqual(model.preview.assembly.parts.map((part) => part.name), ['block', 'ball', 'rod', 'slab', 'cap']);
+  assert.deepEqual(model.preview.meshes.map((mesh) => Math.round(mesh.volume * 10) / 10), [125, 113.1, 62.8, 100, 8]);
+
+  // Editing one part rebuilds one mesh.
+  const edited = await counting.build({ 'lib.scad': library, 'main.scad': main().replace('part("cap") cap();', 'part("cap") translate([0, 0, 1]) cube(3);') }, 'main.scad');
+  assert.equal(edited.preview.rebuilt, 1);
+  assert.equal(edited.preview.meshes.length, 5);
+});
+
+test('an inline part can be faceted, and it is named in the summary', async () => {
+  const model = await builder.build({ 'main.scad': 'part("duct") hull() { cube(1); translate([2, 0, 0]) cube(1); } part("box") cube(2);' }, 'main.scad');
+  assert.deepEqual(model.preview.meshes.map((mesh) => mesh.quality), ['faceted', 'exact']);
+  const { facetedText } = await import('../src/engine/summary.ts');
+  assert.equal(facetedText(model.preview), '1 part is faceted (duct uses hull).');
+  assert.match(new TextDecoder().decode(builder.exportStep(model)), /NEXT_ASSEMBLY_USAGE_OCCURRENCE/);
+});
+
+test('inline part mistakes are explained', async () => {
+  const run = (source: string) => builder.build({ 'a.scad': 'cube(1);', 'main.scad': source }, 'main.scad');
+  await assert.rejects(run('part("a") cube(1); cube(3);'), /Move the shapes into a part file, or into the braces/);
+  await assert.rejects(run('part("a", "a.scad") cube(1);'), { message: /part\("a"\): it has both a file and shapes in braces/, file: 'main.scad' });
+  await assert.rejects(run('part("a");'), /part\("a"\): give it a file name or shapes in braces/);
+  await assert.rejects(run('part("a") { if (false) cube(1); }'), /part\("a"\): its shapes produce nothing/);
+  await assert.rejects(run('part("a") difference() { cube(1); cube(2); }'), { message: /part\("a"\): .*no solid volume/, file: 'main.scad' });
+  await assert.rejects(run('translate([5, 0, 0]) part("a") cube(1);'), /part\("a"\): an operation such as translate\(\)/);
+  await assert.rejects(run('part("a") cube(1); part("a") cube(2);'), /used twice/);
+});
