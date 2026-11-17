@@ -1,4 +1,4 @@
-import { Box, Boxes, CornerDownRight, Expand, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, RotateCcw, RotateCw, TriangleAlert } from 'lucide-react';
+import { Box, Boxes, CornerDownRight, Expand, Eye, EyeOff, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, RotateCcw, RotateCw, TriangleAlert } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { clampJoint, followerStates, movingJoints, poseBounds, structureOf, turnsFully, type JointSpec } from '../engine/assembly.ts';
 import { advanceJoint, loopStates, moveJoint } from '../engine/kinematics.ts';
@@ -80,6 +80,9 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
   const [angle, setAngle] = useState<ViewAngle | null>('iso');
   const [jointsOpen, setJointsOpen] = useState(true);
   const [playing, setPlaying] = useState<string | null>(null);
+  // Parts left out of the preview, by name. The STEP export still holds every part.
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
+  const partsMenu = useRef<HTMLDetailsElement>(null);
   const live = useRef({ model, pose, onPose });
   live.current = { model, pose, onPose };
 
@@ -141,6 +144,23 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
   useEffect(() => setPlaying(null), [model]);
   useEffect(() => controller.current?.showGrid(grid), [grid]);
   useEffect(() => controller.current?.showEdges(edges), [edges]);
+  useEffect(() => controller.current?.setHidden(hidden), [hidden]);
+  // A rebuild keeps a part hidden while it still has that name. A part that is gone or renamed is forgotten.
+  useEffect(() => {
+    const names = new Set(model?.assembly.parts.map((part) => part.name));
+    setHidden((current) => {
+      const kept = [...current].filter((name) => names.has(name));
+      return kept.length === current.size ? current : new Set(kept);
+    });
+  }, [model]);
+  useEffect(() => {
+    const close = (event: PointerEvent) => {
+      const menu = partsMenu.current;
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+    };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, []);
 
   const size = useMemo(() => {
     if (!model) return undefined;
@@ -164,6 +184,42 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
           )}
         </div>
         <div className="preview-tools">
+          {model?.isAssembly && partCount > 1 && (
+            <details ref={partsMenu} className="parts-menu" onKeyDown={(event) => {
+              if (event.key === 'Escape' && partsMenu.current?.open) {
+                partsMenu.current.open = false;
+                partsMenu.current.querySelector('summary')?.focus();
+              }
+            }}>
+              <summary className="view-tool" title="Show or hide parts in the preview" aria-label="Show or hide parts">
+                {hidden.size ? <EyeOff size={16}/> : <Eye size={16}/>}<span>Parts</span>
+                {hidden.size > 0 && <span className="parts-hidden">{hidden.size} hidden</span>}
+              </summary>
+              <div className="parts-popover">
+                <header>
+                  <strong>Parts</strong>
+                  <button type="button" disabled={!hidden.size} onClick={() => setHidden(new Set())}>Show all</button>
+                </header>
+                <ul>
+                  {model.assembly.parts.map((part) => (
+                    <li key={part.name}>
+                      <label>
+                        <input type="checkbox" checked={!hidden.has(part.name)} onChange={(event) => {
+                          const next = new Set(hidden);
+                          if (event.currentTarget.checked) next.delete(part.name);
+                          else next.add(part.name);
+                          setHidden(next);
+                        }}/>
+                        <i aria-hidden="true" style={{ background: `rgb(${part.color.map((value) => Math.round(value * 255)).join(' ')})` }}/>
+                        <span>{part.name}</span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+                <p>Hiding changes the preview only. STEP still has every part.</p>
+              </div>
+            </details>
+          )}
           <button className="view-tool" type="button" title="Toggle grid and axes" aria-pressed={grid} onClick={() => setGrid(!grid)}><Grid3X3 size={16}/><span>Grid</span></button>
           <button className="view-tool" type="button" title="Toggle part edges" aria-pressed={edges} onClick={() => setEdges(!edges)}><Layers2 size={16}/><span>Edges</span></button>
           <span className="view-tool-divider" />

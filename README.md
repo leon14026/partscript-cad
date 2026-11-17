@@ -44,6 +44,8 @@ joint("lift", type = "hinge", parent = "base", child = "arm",
 
 The preview shows a slider for each moving joint. Moving a joint repositions the built parts and recalculates no geometry, so it stays quick on integrated graphics and in the software preview. **Export STEP** writes an assembly with one named, coloured component per part, in the pose shown. STEP carries the positions and not the joints.
 
+To see inside a machine, open **Parts** in the preview toolbar and untick a part, such as a gear guard or a side plate. The part leaves the picture, the toolbar says how many are hidden, and **Show all** brings them back. A part stays hidden through a rebuild for as long as it keeps its name. Hiding changes the preview only: **Export STEP** still writes every part. A part that should be hidden on its own needs its own `part()`, so write a cover or a bracket as a separate part and fix it to the frame with a `fixed` joint.
+
 ### Parts written in place
 
 A part does not need its own file. Put its shapes in braces after `part()`:
@@ -135,7 +137,7 @@ BOSL2 is bundled. Write `include <BOSL2/std.scad>` and, for example, `include <B
 
 ## Validate
 
-`npm run check` checks TypeScript. `npm test` runs both WASM kernels against the example parts and the example assembly, writes STEP fixtures in `.test-output/`, and exercises failure cases. The assembly test reads the exported STEP back and compares every part's position with the pose solved for the preview. The loop tests turn a crank-rocker through a full revolution and compare the rocker's swing and a slider-crank's piston position with their closed-form values. The follower tests check a ratio, a table read between rows, a table that wraps, a chain of followers and a gear wheel that follows the crank of a closed linkage through a full turn, and read the exported STEP back to see each follower where its formula puts it. The fixture test checks previews, dimensions, volume, units, analytic surfaces and parameter regeneration. Run `test/verify_in_freecad.py` with a Python environment where FreeCAD's `FreeCAD` and `Part` modules can be imported to check the exports independently in FreeCAD.
+`npm run check` checks TypeScript. `npm test` runs both WASM kernels against the example parts and the example assembly, writes STEP fixtures in `.test-output/`, and exercises failure cases. The assembly test reads the exported STEP back and compares every part's position with the pose solved for the preview. The loop tests turn a crank-rocker through a full revolution and compare the rocker's swing and a slider-crank's piston position with their closed-form values. The page check hides a part, rebuilds, and shows it again, and compares the drawn picture each time. The follower tests check a ratio, a table read between rows, a table that wraps, a chain of followers and a gear wheel that follows the crank of a closed linkage through a full turn, and read the exported STEP back to see each follower where its formula puts it. The fixture test checks previews, dimensions, volume, units, analytic surfaces and parameter regeneration. Run `test/verify_in_freecad.py` with a Python environment where FreeCAD's `FreeCAD` and `Part` modules can be imported to check the exports independently in FreeCAD.
 
 ## License
 

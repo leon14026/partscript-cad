@@ -52,6 +52,36 @@ with sync_playwright() as p:
     page.goto(url)
     page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
 
+    def canvas_picture():
+        page.wait_for_timeout(300)   # a frame is drawn on the next animation frame
+        return page.locator('.canvas-host canvas').screenshot()
+
+    def check_hiding(name):
+        # Parts menu: a hidden part leaves the picture, stays hidden through a rebuild, and Show all brings it back.
+        whole = canvas_picture()
+        page.click('summary[aria-label="Show or hide parts"]')
+        boxes = page.locator('.parts-popover input[type=checkbox]')
+        if boxes.count() < 2 or not all(box.is_checked() for box in boxes.all()):
+            problems.append(f'{name}: the Parts menu should list every part, all shown')
+            return
+        boxes.nth(1).uncheck()
+        page.keyboard.press('Escape')
+        if page.locator('.parts-hidden').count() != 1 or '1 hidden' not in page.locator('.parts-hidden').inner_text():
+            problems.append(f'{name}: the Parts menu did not say that one part is hidden')
+        if canvas_picture() == whole:
+            problems.append(f'{name}: hiding a part did not change the picture')
+        page.click('.cm-content')
+        page.keyboard.press('Control+Enter')
+        page.wait_for_timeout(200)
+        page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
+        if page.locator('.parts-hidden').count() != 1:
+            problems.append(f'{name}: a rebuild should keep the part hidden')
+        page.click('summary[aria-label="Show or hide parts"]')
+        page.click('.parts-popover header button')
+        page.keyboard.press('Escape')
+        if page.locator('.parts-hidden').count() != 0 or canvas_picture() != whole:
+            problems.append(f'{name}: Show all did not bring back the original picture')
+
     page.click('summary[aria-label="Examples"]')
     names = [item.inner_text() for item in page.locator('.examples-popover button strong').all()]
     page.keyboard.press('Escape')
@@ -70,6 +100,8 @@ with sync_playwright() as p:
             rows = followers.all_inner_texts()
             if len(rows) != 2 or 'follows crank' not in rows[0] or '60°' not in rows[0] or 'follows wheel' not in rows[1] or '3 mm' not in rows[1]:
                 problems.append(f'{name}: expected the wheel to follow the crank at -60° and the plunger to follow the wheel at 3 mm, saw {rows}')
+        if name == 'Crank-rocker linkage':
+            check_hiding(name)
         joints = page.locator('.joint-play:not([disabled])')
         if joints.count():
             before = page.locator('.joint-value input').first.input_value()

@@ -6,6 +6,8 @@ export interface SoftwarePart {
   /** World transform, including the offset that centres the model. */
   matrix: Matrix4;
   color: [number, number, number];
+  /** A hidden part is left out of the picture, including its edges and what they would hide. */
+  hidden?: boolean;
 }
 
 interface Frame {
@@ -193,9 +195,10 @@ export function createSoftwarePreview(canvas: HTMLCanvasElement) {
     pixels.data.fill(0);
     depth.fill(Infinity);
     // Every part goes into the depth buffer before any edge is drawn, so parts hide each other's edges.
-    for (const part of parts) drawTriangles(part, project(part.mesh.positions, matrix.multiplyMatrices(view, part.matrix)));
+    const drawn = parts.filter((part) => !part.hidden);
+    for (const part of drawn) drawTriangles(part, project(part.mesh.positions, matrix.multiplyMatrices(view, part.matrix)));
     if (edgesVisible && !draft) {
-      for (const part of parts) drawEdges(project(part.mesh.edgeSegments, matrix.multiplyMatrices(view, part.matrix)));
+      for (const part of drawn) drawEdges(project(part.mesh.edgeSegments, matrix.multiplyMatrices(view, part.matrix)));
     }
     layerContext!.putImageData(pixels, 0, 0);
     context!.drawImage(layer, 0, 0);

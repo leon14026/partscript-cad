@@ -71,6 +71,8 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
   let lost = false;
   let frameRequest = 0;
   let currentModel: ModelPreview | undefined;
+  // Parts left out of the picture, by name, so a rebuild keeps them hidden. Only the preview changes.
+  let hiddenNames: ReadonlySet<string> = new Set();
 
   function draw() {
     if (lost || frameRequest) return;
@@ -146,6 +148,14 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
     });
   }
 
+  function applyHidden() {
+    currentModel?.assembly.parts.forEach((part, i) => {
+      const hidden = hiddenNames.has(part.name);
+      if (partGroups[i]) partGroups[i].visible = !hidden;
+      if (softwareParts[i]) softwareParts[i].hidden = hidden;
+    });
+  }
+
   const offsetMatrix = new THREE.Matrix4();
 
   function setModel(model: ModelPreview | undefined, pose: Pose) {
@@ -204,6 +214,7 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
     }
 
     applyPose(pose);
+    applyHidden();
     radius = Math.max(size.length() / 2, 0.001);
     setGrid(Math.max(size.x, size.y, size.z), min.z - centre.z);
     fit();
@@ -238,6 +249,12 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
       draw();
     },
     fit,
+    /** Leave these parts out of the picture. A name that is not in the model is ignored. */
+    setHidden(names: ReadonlySet<string>) {
+      hiddenNames = names;
+      applyHidden();
+      draw();
+    },
     showGrid(value: boolean) {
       gridVisible = value;
       if (grid) grid.visible = value;
