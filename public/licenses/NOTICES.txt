@@ -1,0 +1,29 @@
+Partscript CAD application source
+GNU GPL, version 3 or later. See GPL-3.0.txt and the source archive.
+https://www.gnu.org/licenses/gpl-3.0.html
+
+OpenSCAD WebAssembly
+OpenSCAD contributors. GNU GPL version 2 or later, with separately licensed
+components in the upstream WebAssembly build.
+Snapshot 2025.03.25.wasm24456, OpenSCAD commit ce5039f8a.
+Source and WebAssembly build scripts: https://github.com/openscad/openscad/tree/ce5039f8a
+Build environment: https://github.com/openscad/openscad-wasm
+Published license notices: https://github.com/openscad/openscad-playground/blob/main/LICENSE.md
+Original unmodified browser archive:
+https://files.openscad.org/playground/OpenSCAD-2025.03.25.wasm24456-WebAssembly-web.zip
+SHA-256: 0968af31b9c9b3bba68d9031de1695ccae51c32231a1aab4ef27b18c86379f3b
+
+occt-wasm 5.17.2 / Open CASCADE Technology
+The occt-wasm wrapper is available under MIT or Apache-2.0. The compiled
+Open CASCADE Technology module is distributed under LGPL-2.1 with the
+Open CASCADE exception. The source and build scripts are available at:
+https://github.com/andymai/occt-wasm/tree/1c8cb49956fd3bf9717a7688deb79a3fc37e01e8
+Use a recursive checkout for the pinned OCCT source submodule.
+https://dev.opencascade.org/resources/licensing
+The runtime is loaded from separate .js and .wasm assets. To substitute a
+compatible rebuild of the engine, replace the module and binary in the build
+or update their URLs in src/engine/geometry.worker.ts and rebuild the app.
+
+Frontend packages
+See npm-licenses.txt for license notices distributed with the app. Exact
+dependency versions and integrity hashes are recorded in package-lock.json.
