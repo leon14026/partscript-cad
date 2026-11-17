@@ -24,6 +24,39 @@ The runtime is loaded from separate .js and .wasm assets. To substitute a
 compatible rebuild of the engine, replace the module and binary in the build
 or update their URLs in src/engine/geometry.worker.ts and rebuild the app.
 
+BOSL2 (Belfry OpenSCAD Library, v2)
+Loaded only when a project includes it, from engines/libraries/BOSL2.zip.
+The zip holds the top-level .scad files and the LICENSE of commit
+ca677d0cf7a70fdd302dcbdb622e074ac2eaa5b3, unmodified.
+https://github.com/BelfrySCAD/BOSL2/tree/ca677d0cf7a70fdd302dcbdb622e074ac2eaa5b3
+To rebuild the zip, see scripts/fetch-libraries.mjs.
+
+BSD 2-Clause License
+
+Copyright (c) 2017-2019, Revar Desmera
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 Frontend packages
 See npm-licenses.txt for license notices distributed with the app. Exact
 dependency versions and integrity hashes are recorded in package-lock.json.

@@ -101,11 +101,20 @@ A part is built one of two ways, and the build output says which:
 - **Exact.** A part made only of `cube`, `sphere`, `cylinder` (including a cone or frustum), `translate`, `rotate`, `mirror`, `union`, `difference`, `intersection`, `color` and `render` is rebuilt in OpenCascade with true planes, cylinders, cones and spheres. This is what the STEP file contains. Curves stay smooth at any `$fa` and `$fs`; only `$fn` above zero asks for visible facets.
 - **Faceted.** Any other part is meshed by OpenSCAD itself and shown as it is. For STEP the mesh is sewn into a valid solid and triangles in one plane are merged, so the file has flat faces and no true curves. Faceted STEP files are large, about 4 KiB per face. The build output names each faceted part and the operation that caused it, for example `chute.scad uses hull`.
 
-A part may hold several separate bodies. A file that draws only flat 2D shapes needs `linear_extrude`. `text()` fails because no fonts are bundled. Imports and external libraries are unavailable in this version. The geometry worker runs the official OpenSCAD evaluator and keeps the solids for the current build. The Three.js view draws a mesh of each part and the STEP writer uses the solid itself. An edit invalidates export until the new revision builds. Keep the SCAD file as the parametric source.
+A part may hold several separate bodies. A file that draws only flat 2D shapes needs `linear_extrude`. `text()` fails because no fonts are bundled. Imports are unavailable in this version. The geometry worker runs the official OpenSCAD evaluator and keeps the solids for the current build. The Three.js view draws a mesh of each part and the STEP writer uses the solid itself. An edit invalidates export until the new revision builds. Keep the SCAD file as the parametric source.
 
-The OpenSCAD CSG format serializes numeric values to six significant digits. Expect that precision before CAD operations, including translations and rotation matrices. The bridge restores matrix orthogonality within the serialization tolerance. `include` and `use` reach other files in the same project. Joint positions are passed with 0.000001 mm resolution.
+The OpenSCAD CSG format serializes numeric values to six significant digits. Expect that precision before CAD operations, including translations and rotation matrices. The bridge restores matrix orthogonality within the serialization tolerance. `include` and `use` reach other files in the same project, and BOSL2 (below). Joint positions are passed with 0.000001 mm resolution.
 
 Each job has a 60-second deadline and the user can cancel it. Input is limited to 256 KiB per file, 40 files and 1 MiB per project, 200 parts per assembly, and 200,000 evaluated nodes and 16 MiB of evaluated geometry text per part. Designed for modest mechanical parts on laptops with integrated WebGL2 graphics, the 4 GB system memory target needs measurement on physical hardware. The examples and controls are available in a single tab. A future v2 can move the geometry worker protocol to an optional remote service.
+
+### Libraries
+
+BOSL2 is bundled. Write `include <BOSL2/std.scad>` and, for example, `include <BOSL2/gears.scad>`, and gears, threads, screws and the rest of the library build. Other libraries are unavailable in this version, and the build output names any include it cannot find.
+
+- **Download.** The library is a 1.2 MiB zip, fetched the first time a project includes it during a visit. Projects that do not include BOSL2 never download it.
+- **Speed.** Each OpenSCAD run that includes BOSL2 takes about a quarter of a second longer to read it. A part file per part means one run per file, so for a machine with many parts prefer `part("name") ...` in one assembly file (see above), which evaluates once.
+- **Faceted.** BOSL2 gears come out as `linear_extrude` of a polygon and threads as `polyhedron`, so those parts are faceted and their STEP files have flat faces, as described above. The build output names each faceted part. A gear's tooth flanks are short straight segments, and its top and bottom faces are flat.
+- **Version.** The zip holds the top-level `.scad` files of BOSL2 commit `ca677d0`, unmodified, with its BSD-2-Clause license. `npm run libraries` rebuilds it from that commit.
 
 ## Validate
 

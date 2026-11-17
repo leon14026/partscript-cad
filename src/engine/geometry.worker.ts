@@ -1,8 +1,9 @@
 import { OcctKernel, type OcctModuleFactory } from 'occt-wasm';
 import occtEntry from 'occt-wasm/dist/occt-wasm.js?url';
 import occtBinary from 'occt-wasm/dist/occt-wasm.wasm?url';
+import { unzipSync } from 'fflate';
 import { ModelBuilder, type BuiltModel } from './build.ts';
-import type { OpenScadFactory } from './scad.ts';
+import { libraries, type LibraryFiles, type OpenScadFactory } from './scad.ts';
 import { CadError, type GeometryCommand, type GeometryReply } from './protocol.ts';
 
 const scope = self as DedicatedWorkerGlobalScope;
@@ -20,12 +21,17 @@ async function loadKernel() {
   return OcctKernel.init({ createModule, wasm });
 }
 
-async function loadOpenScad() {
-  // Workers are emitted in assets/. The engine is served separately and can be replaced.
+/** Where a file under public/ is served. Workers are emitted in assets/, so the built site goes up one folder. */
+function assetUrl(path: string) {
   const base = new URL(import.meta.env.BASE_URL, scope.location.origin);
-  const url = import.meta.env.DEV
-    ? new URL('engines/openscad/openscad.js', base).href
-    : new URL('../engines/openscad/openscad.js', scope.location.href).href;
+  return import.meta.env.DEV
+    ? new URL(path, base).href
+    : new URL(`../${path}`, scope.location.href).href;
+}
+
+async function loadOpenScad() {
+  // The engine is served separately and can be replaced.
+  const url = assetUrl('engines/openscad/openscad.js');
   const module = await import(/* @vite-ignore */ url) as { default: OpenScadFactory };
   // Every run starts a fresh instance. Download the engine once and hand it the same bytes each time.
   const response = await fetch(new URL('openscad.wasm', url));
@@ -36,9 +42,29 @@ async function loadOpenScad() {
   return factory;
 }
 
+const libraryCache = new Map<string, Promise<LibraryFiles>>();
+
+/** Download and unzip a library the first time a build includes it, then keep it for later builds. */
+function loadLibrary(name: string) {
+  let loaded = libraryCache.get(name);
+  if (!loaded) {
+    loaded = (async () => {
+      if (!Object.hasOwn(libraries, name)) throw new CadError(`${name} is not a library of this version.`);
+      const response = await fetch(assetUrl(libraries[name as keyof typeof libraries]));
+      if (!response.ok) throw new CadError(`The ${name} library could not be loaded. Reload the page and try again.`);
+      return unzipSync(new Uint8Array(await response.arrayBuffer()));
+    })().catch((error: unknown) => {
+      libraryCache.delete(name);
+      throw error;
+    });
+    libraryCache.set(name, loaded);
+  }
+  return loaded;
+}
+
 function loadBuilder() {
   builderPromise ??= Promise.all([loadKernel(), loadOpenScad()])
-    .then(([kernel, createOpenScad]) => new ModelBuilder(kernel, createOpenScad))
+    .then(([kernel, createOpenScad]) => new ModelBuilder(kernel, createOpenScad, loadLibrary))
     .catch((error: unknown) => {
       builderPromise = undefined;
       throw error;

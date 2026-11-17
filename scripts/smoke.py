@@ -44,6 +44,9 @@ with sync_playwright() as p:
     if args.software:
         context.add_init_script("const g = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (t, ...a) { return /webgl/.test(t) ? null : g.call(this, t, ...a); };")
     page = context.new_page()
+    # Requests made by the geometry worker show up on the context, not the page.
+    library_fetches = []
+    context.on('response', lambda r: library_fetches.append((r.status, r.url)) if 'BOSL2.zip' in r.url else None)
     page.on('console', lambda m: problems.append(f'console: {m.text[:300]}') if m.type == 'error' else None)
     page.on('pageerror', lambda e: problems.append(f'page error: {str(e)[:300]}'))
     page.goto(url)
@@ -101,6 +104,24 @@ with sync_playwright() as p:
     page.wait_for_timeout(300)
     page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}inline.png"))
     print(f'inline parts: {notice}')
+
+    # BOSL2 is fetched only when a project includes it. Nothing above should have asked for it.
+    if library_fetches:
+        problems.append(f'BOSL2 was fetched before any project included it: {library_fetches}')
+    page.click('.cm-content')
+    page.keyboard.press('Control+A')
+    page.keyboard.type('include <BOSL2/std.scad> include <BOSL2/gears.scad> spur_gear(mod = 2, teeth = 20, thickness = 8);', delay=5)
+    page.keyboard.press('Control+Enter')
+    page.wait_for_timeout(200)
+    page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
+    notice = page.inner_text('.output-message').replace('\n', ' ')
+    if 'Built one solid' not in notice or 'faceted' not in notice or page.locator('.output-message.error').count():
+        problems.append(f'BOSL2 gear: {notice}')
+    if [status for status, _ in library_fetches] != [200]:
+        problems.append(f'BOSL2 should be fetched once with status 200: {library_fetches}')
+    page.wait_for_timeout(300)
+    page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}bosl2.png"))
+    print(f'BOSL2 gear: {notice} (fetches: {len(library_fetches)})')
     browser.close()
 
 server.shutdown()

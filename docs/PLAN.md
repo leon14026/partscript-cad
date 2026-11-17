@@ -16,7 +16,8 @@ Phases 1 and 2 come first, in that order. After them, phases 3 to 7 are independ
 
 - **Phase 1: done (17 November 2026).** Differences from the text below, so later phases read true: `BuiltModel.solids` is now `BuiltModel.entries` (each an exact solid or a faceted mesh, see `CachedSolid` in `build.ts`). `unsupported()` returns a descriptive reason, for example `hull`, `scale` or `cylinder with $fn`. `meshToSolid` in `solid.ts` uses `sew` and `makeSolid` per shell, not `sewAndSolidify` (F18). `summary.ts` holds the sentence about faceted parts. The tests are `test/mesh.test.ts` and `test/faceted.test.ts`.
 - **Phase 2: done (17 November 2026).** `partTag(name)` in `assembly.ts` is the hash. `nodeTag(node)` in `csg.ts` reads a render node's tag. `PartSpec` gained `inline` and `colorGiven`, and `file` is optional. A part wrapped in `translate()` or another operation is an error. The tests are the last six in `test/assembly.test.ts`.
-- Phases 3 to 7: not started.
+- **Phase 4: done (17 November 2026).** Differences from the text below: `scripts/fetch-libraries.mjs` fetches the pinned commit with `git`, not an archive link, because git reads work where `codeload.github.com` is refused. The zip holds 56 `.scad` files plus `LICENSE` (57 files, 1.22 MiB). `checkProject` now returns the library names a project includes. `ModelBuilder` takes a third argument, a `LibraryLoader`, and mounts only the libraries that project includes in every evaluation run (never in the mesh runs, which read a CSG dump). The worker's loader is `loadLibrary` in `geometry.worker.ts`; the tests use `test/libraries.ts`. A BOSL2 file name that does not exist is reported by name. `fflate` is now a runtime dependency, so its license joins `npm-licenses.txt`. Step 7 (fonts for `text()`) was not done: the owner's v3.3.1 views, `exploded` included, do not call `text()` in their default settings.
+- Phases 3 and 5 to 7: not started.
 
 Phase 5 is the hardest. If a smaller model gets stuck there, hand that phase to a stronger one. Everything else is routine once the design below is followed.
 
@@ -69,7 +70,7 @@ kinematics.ts settles loops -> Viewport.tsx -> viewer.ts (WebGL) or softwarePrev
 | File | What it does |
 |---|---|
 | `src/engine/protocol.ts` | Message and data types shared by page and worker. `CadError`. Size limits. |
-| `src/engine/scad.ts` | `checkProject` (source checks), `evaluateScad` (one OpenSCAD run: files in, CSG text + ECHO lines out). Appends the prelude to the entry file. |
+| `src/engine/scad.ts` | `checkProject` (source checks, returns the libraries a project includes), `evaluateScad` (one OpenSCAD run: files and mounted libraries in, CSG text + ECHO lines out). Appends the prelude to the entry file. `libraries` is the registry of bundled libraries (BOSL2). |
 | `src/engine/assembly.ts` | The prelude (`part()`, `joint()` as OpenSCAD modules that `echo` records), record reader and validation, `structureOf` (which joints carry parts, which close loops), matrices, `solvePose`. |
 | `src/engine/kinematics.ts` | Loop solver (Levenberg-Marquardt), `moveJoint`, `advanceJoint`, `settlePose`, `openingPose`, `loopStates`. Runs on the page, not in the worker. |
 | `src/engine/csg.ts` | Parser for OpenSCAD's CSG dump. Reads every node with its character range. `unsupported()` says which parts the exact builder cannot make. `taggedParts`, `childrenText`, `firstColor` serve inline parts. |
@@ -77,12 +78,13 @@ kinematics.ts settles loops -> Viewport.tsx -> viewer.ts (WebGL) or softwarePrev
 | `src/engine/solid.ts` | CSG tree to OCCT solid (`buildSolid`), preview mesh (`previewSolid`), faceted mesh to solid (`meshToSolid`), STEP writers (`writeStep`, `writeAssemblyStep`). |
 | `src/engine/summary.ts` | The sentence and tooltip that name faceted parts. |
 | `src/engine/build.ts` | `ModelBuilder`: orchestrates a build, caches solids by CSG text, exports STEP. A part is built exact or faceted. |
-| `src/engine/geometry.worker.ts`, `client.ts` | Worker entry and its page-side client (one job at a time, 60 s timeout, cancel). |
+| `src/engine/geometry.worker.ts`, `client.ts` | Worker entry and its page-side client (one job at a time, 60 s timeout, cancel). The worker also fetches and unzips a library the first time a build includes it. |
+| `scripts/fetch-libraries.mjs`, `public/engines/libraries/` | Rebuilds `BOSL2.zip` from a pinned commit (`npm run libraries`). The zip is committed. |
 | `src/components/viewer.ts`, `softwarePreview.ts` | three.js viewer, and a CPU renderer used when WebGL2 is missing. Both draw one mesh per part with a matrix. |
 | `src/components/Viewport.tsx` | Preview pane, joint sliders, play button, loop status. |
 | `src/App.tsx`, `project.ts`, `drafts.ts` | Shell: file tabs, run, export, open/save, autosave to IndexedDB. |
 | `src/examples.ts`, `assemblyExample.ts`, `linkageExample.ts` | Example projects. |
-| `test/*.test.ts` | Node tests that run both WASM engines. `geometry` (single parts), `faceted` (meshed parts), `mesh` (pure functions), `assembly` (joints, inline parts, STEP round trip), `loops` (solver). |
+| `test/*.test.ts` | Node tests that run both WASM engines. `geometry` (single parts), `faceted` (meshed parts), `mesh` (pure functions), `assembly` (joints, inline parts, STEP round trip), `loops` (solver), `libraries` (BOSL2; `test/libraries.ts` reads the zip the way the worker fetches it). |
 
 ### The assembly language today
 
@@ -126,6 +128,8 @@ These were run in Node against the engines in this repository (OpenSCAD `2025.03
 
 | F19 | `include <lib.scad>` followed by `part = "none";` in the entry file is silent under `--hardwarnings` and leaves an empty dump (`group();`). The recipe of phase 2 works as written. | `test/assembly.test.ts`, library fixture. |
 | F20 | The owner's v4 file included from an assembly with five inline parts (drum body, drum cap, spacer, drive plate, chute): one evaluation plus one mesh run per part, all faceted (`linear_extrude`). First build 0.7 s, unchanged rebuild 88 ms with one OpenSCAD run, editing a drum parameter rebuilds one part. STEP assembly 11.6 MiB in 6.2 s, five solids. | Scratch script, not in the repository. |
+
+| F21 | The owner's v3.3.1 file builds whole with BOSL2 mounted: one faceted part, 41,032 triangles, volume 833,318.3 mm³, 277 × 214 × 346 mm. Build 5.2 s (BOSL2 evaluation 3.4 s, mesh 1.7 s, two OpenSCAD runs). STEP export 32.9 s, 40.8 MiB, re-imports as 15 solids and 10,498 faces with volume 833,318.3. Views `exploded`, `gear_drum`, `gear_crank`, `crank_disk`, `rocker`, `handle` and `thumbscrew` all build (0.5 to 5.4 s). A BOSL2 `spur_gear(mod = 2, teeth = 20, thickness = 8)` is 1.2 s, volume 9,830.5 against a hand estimate of 9,800. **The 32.9 s export is more than half of the 60 s job limit on a cloud machine; a laptop two to three times slower would exceed it.** For v4, splitting into five inline parts cut the export from 20 s to 6.2 s (F18, F20). v3.3.1 has not been split and measured yet. | Scratch scripts, not in the repository. |
 
 ### Dump syntax by example
 
@@ -445,7 +449,7 @@ A following joint has no slider. It shows its value, read only.
 
 ---
 
-## Phase 4. The BOSL2 library
+## Phase 4. The BOSL2 library (done)
 
 **Result for the user:** `include <BOSL2/std.scad>` works. Gears, threads and the rest of BOSL2 build. Until phase 5 they are faceted. After it, extruded gears keep flat tooth flanks (they are polygons, F6) with exact top and bottom faces.
 
@@ -461,8 +465,8 @@ A following joint has no slider. It shows its value, read only.
 
 ### Acceptance
 
-- [ ] Tests pass.
-- [ ] The owner's `label_fan_folder.scad` (v3.3.1) opens and builds its `assembly` view as one faceted part. Measured in Node: about 3.5 s (F7).
+- [x] Tests pass (49).
+- [x] The owner's `label_fan_folder.scad` (v3.3.1) opens and builds its `assembly` view as one faceted part. Measured in Node: 5.2 s with two OpenSCAD runs (F21). STEP export of the whole machine is 32.9 s (F21). Inline parts are the likely fix, as for v4, but it is not measured for v3.3.1.
 - [ ] With phases 2 and 3 done: an assembly file that includes the v3.3.1 file reproduces its motion. See the appendix for a starting point.
 
 ---

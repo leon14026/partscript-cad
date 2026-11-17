@@ -3,7 +3,7 @@ import { partTag, readAssembly, singlePart, solvePose, type AssemblySpec, type C
 import { childrenText, firstColor, hasShapes, parseCsg, taggedParts, unsupported, type CsgNode } from './csg.ts';
 import { maxTriangles, meshVolume, parseBinaryStl, toPartMesh } from './mesh.ts';
 import { CadError, type BuildStage, type ModelPreview, type PartMesh, type Pose, type ProjectFiles } from './protocol.ts';
-import { checkProject, evaluateScad, renderMesh, type Evaluation, type OpenScadFactory } from './scad.ts';
+import { checkProject, evaluateScad, renderMesh, type Evaluation, type LibraryFiles, type LibraryLoader, type OpenScadFactory } from './scad.ts';
 import { buildSolid, meshToSolid, previewSolid, writeAssemblyStep } from './solid.ts';
 
 /**
@@ -58,11 +58,24 @@ export interface BuiltModel {
 export class ModelBuilder {
   #kernel: OcctKernel;
   #createOpenScad: OpenScadFactory;
+  #loadLibrary?: LibraryLoader;
   #cache = new Map<string, CachedSolid>();
 
-  constructor(kernel: OcctKernel, createOpenScad: OpenScadFactory) {
+  /** `loadLibrary` fetches a library such as BOSL2 when a project includes it. Without one, libraries are unavailable. */
+  constructor(kernel: OcctKernel, createOpenScad: OpenScadFactory, loadLibrary?: LibraryLoader) {
     this.#kernel = kernel;
     this.#createOpenScad = createOpenScad;
+    this.#loadLibrary = loadLibrary;
+  }
+
+  /** Fetch the libraries a project includes. Only those are mounted, so other projects stay fast. */
+  async #libraries(names: string[], progress: (stage: BuildStage) => void) {
+    const mounted: Record<string, LibraryFiles> = {};
+    if (names.length === 0) return mounted;
+    if (!this.#loadLibrary) throw new CadError(`${names.join(', ')} cannot be loaded here. Remove the include line, or use the site.`);
+    progress('load');
+    for (const name of names) mounted[name] = await this.#loadLibrary(name);
+    return mounted;
   }
 
   /** Build the solid for one part's shapes. `context` names an inline part in error messages. */
@@ -115,9 +128,9 @@ export class ModelBuilder {
 
   async build(files: ProjectFiles, entry: string, progress: (stage: BuildStage) => void = () => {}): Promise<BuiltModel> {
     const started = performance.now();
-    checkProject(files, entry);
+    const mounted = await this.#libraries(checkProject(files, entry), progress);
     progress('evaluate');
-    const main = await evaluateScad(files, entry, this.#createOpenScad);
+    const main = await evaluateScad(files, entry, this.#createOpenScad, mounted);
     const isAssembly = main.records.length > 0;
     let assembly: AssemblySpec;
     let inline = new Map<number, CsgNode>();
@@ -145,7 +158,7 @@ export class ModelBuilder {
     const messages = [...main.messages];
     for (const { file } of assembly.parts) {
       if (file === undefined || evaluations.has(file)) continue;
-      const evaluation = await evaluateScad(files, file, this.#createOpenScad);
+      const evaluation = await evaluateScad(files, file, this.#createOpenScad, mounted);
       if (evaluation.records.length) {
         throw new CadError(`${file} declares parts of its own. An assembly inside an assembly is unavailable in this version.`, undefined, file);
       }

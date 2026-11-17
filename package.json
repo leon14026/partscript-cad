@@ -8,7 +8,8 @@
     "dev": "vite --host 0.0.0.0",
     "check": "tsc --noEmit",
     "build": "vite build && node scripts/package-source.mjs",
-    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test test/*.test.ts"
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test test/*.test.ts",
+    "libraries": "node scripts/fetch-libraries.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.4",
@@ -21,6 +22,7 @@
     "@fontsource-variable/geist": "5.3.0",
     "@fontsource/ibm-plex-mono": "5.3.0",
     "@lezer/highlight": "1.2.5",
+    "fflate": "0.8.3",
     "lucide-react": "1.73.0",
     "occt-wasm": "5.17.2",
     "react": "19.3.1",
@@ -32,7 +34,6 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@types/three": "0.187.0",
-    "fflate": "0.8.3",
     "typescript": "7.0.2",
     "vite": "8.3.8"
   }
