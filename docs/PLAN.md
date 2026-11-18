@@ -1,6 +1,6 @@
 # Partscript CAD: build plan
 
-Written 16 November 2026 for whoever continues this project, human or model. It covers seven phases, and Phase 8 is a proposal that follows them:
+Written 16 November 2026 for whoever continues this project, human or model. It covers seven phases, and Phases 8, 9 and 10 are proposals that follow them:
 
 1. Any OpenSCAD geometry builds (faceted fallback)
 2. Many parts from one file (inline parts)
@@ -10,6 +10,8 @@ Written 16 November 2026 for whoever continues this project, human or model. It 
 6. Import STEP and STL files, such as GrabCAD downloads
 7. Measure tool
 8. Phone viewer mode (proposed, not started)
+9. User manual: how to use the site and how the syntax works (proposed, not started)
+10. Open an assembly STEP as separate parts (proposed, not started)
 
 Phases 1 and 2 come first, in that order. After them, phases 3 to 7 are independent and can be done in any order. Each phase ends in a working, tested, releasable site.
 
@@ -804,6 +806,114 @@ No engine change, so no new engine tests. The browser smoke test carries the che
 - [ ] Tests pass and `scripts/smoke.py` passes in both modes.
 
 **Out of scope:** editing code on a phone, a native app, offline install (a PWA is a possible later step), and anything that changes the engine.
+
+---
+
+## Phase 9. User manual (proposed, not started)
+
+Asked by the owner on 17 November 2026: add an instruction manual that says how to use the site and how the syntax works. It needs no engine change and can be done at any time. After it exists, a change to the syntax or to a build message updates the manual too (step 5).
+
+### Why
+
+Today the language is taught in three places that each cover part of it: the README sections ("Assemblies and joints", "Linkages and closed loops", "Gears and cams", "Geometry and precision"), the small Help dialog in the page, and the Examples menu. Nothing lists every argument of `part()` and `joint()` in one place, and nothing explains the exact and faceted difference to someone who has not read this plan.
+
+### Who it is for
+
+A mechanical engineer who knows CAD and does not write code. Say what to change, with a worked example, and never assume the reader knows OpenSCAD. This is the same reader the error messages are written for (see `CLAUDE.md`).
+
+### Contents
+
+1. **Getting started.** New, Run, the file tabs and the **+**, pinning the file Run builds, Examples, Save file and Save project, Open, autosave and what "Draft saved on this device" means, Export STEP.
+2. **OpenSCAD in ten minutes.** Millimetres, `cube`, `cylinder`, `sphere`, `translate`, `rotate`, `union`, `difference`, `linear_extrude`, `$fn`. Each with a one-line picture of what it makes.
+3. **Parts.** `part(name, file, at, rot, color)`, a part in a file and a part written in place with `part(name) { ... }`. What `at` and `rot` mean, and in which coordinates.
+4. **Joints.** `joint(...)` with a table of every argument: what it means, its unit, its default. `hinge`, `slider` and `fixed`. The joint frame (`at`, `rot`) in the parent and the same frame in the child (`child_at`, `child_rot`). `axis`, `limits`, `value`. A worked two-link arm that the reader can change one number at a time.
+5. **Linkages and driven joints.** Closed loops, `follow`, `ratio`, `offset` and `table` (gears and cams), with the gear and cam examples from the Examples menu explained line by line.
+6. **Several files.** `include`, `use`, parameters in one file shared by many, and the BOSL2 library.
+7. **Importing STEP and STL.** Opening a file, **Show on its own**, the `part("name", "file");` line, naming rules, units, why an STL part is faceted.
+8. **Measure.** Face, edge and corner picks and what each pair of picks reports.
+9. **Exact and faceted.** What each word means for the exported STEP, which features stay exact, which fall back (`hull`, a polyhedron, a mesh import), and how to read the message in the build output.
+10. **When something goes wrong.** The common build messages, each with the change that fixes it.
+11. **Limits.** 40 files, 256 KiB per text file, 40 MB per imported file, 120 MB of imported files in all, and the 60 s job.
+12. **A one-page cheat sheet** of the syntax that can be printed.
+
+### Design
+
+- Write it once, as Markdown in `docs/MANUAL.md`. The README keeps its short version and links to it.
+- Ship it with the site so it works with no backend: a build step turns `docs/MANUAL.md` into a static page that the Help dialog and the header link to. Pick the way to render it that adds the fewest dependencies (rule 8). If the owner would rather have a plain file on GitHub, the Markdown alone is the first release and the page can follow.
+- The syntax reference is written from `src/engine/assembly.ts`, which is what actually reads `part()` and `joint()`. Where the plan, the README and the code disagree, the code wins and the others are fixed.
+
+### Steps
+
+1. Write the outline above as `docs/MANUAL.md`, with every section present and the code blocks filled in.
+2. Write `test/manual.test.ts`. It reads every fenced block marked `scad` in the manual and builds it. A block that is meant to fail is marked `scad error` and must fail with the message printed under it. A manual whose examples stop building then fails the tests.
+3. Add the page build step and the Help dialog and header links.
+4. Add a smoke check that the link opens the page and that the page has the twelve section headings.
+5. Extend rule 9 in section 0 of this plan: a change to the syntax or to a build message updates `docs/MANUAL.md` in the same commit.
+
+### Tests
+
+`test/manual.test.ts` as above. The examples that it builds are small, so it should add seconds to the run, not minutes.
+
+### Acceptance
+
+- [ ] Every section above exists and every `scad` example in the manual builds (`test/manual.test.ts`).
+- [ ] The argument tables for `part()` and `joint()` match `src/engine/assembly.ts` (the owner or a reviewer spot-checks three arguments against the code).
+- [ ] The owner can follow the manual from a blank project to a jointed assembly and then to an exported STEP without opening the README.
+- [ ] Tests pass and `scripts/smoke.py` passes in both modes.
+
+**Out of scope:** video, translations, and a documentation site with search.
+
+---
+
+## Phase 10. Open an assembly STEP as separate parts (proposed, not started)
+
+Asked by the owner on 17 November 2026, after exporting his motor, face plate and base as one STEP and opening it again: can the app split it back into its parts? Today it cannot. Phase 6 reads a STEP into one rigid part, so `part.step` with three parts in it opened as a single part with 11 bodies. This phase reads the structure of the file and lets `part()` pick one component or one body.
+
+### What is true today (17 November 2026)
+
+- `build.ts` `#importStep` calls `kernel.importStep(text)`, takes every solid with `getSubShapes(..., 'solid')` and joins them in one compound. Names, colours and the position of each component in the file are dropped. Plan step 7 of Phase 6 (names and colours) was never built.
+- The app's own STEP export keeps the structure. The owner's export has three components named `base`, `faceplate` and `original.step`, each with its colour and its position in the pose that was shown. The motor inside it shows up only as products named `SOLID`, so a third-party file without good names needs to be picked by body number.
+- `occt-wasm` can read this structure. `kernel.importXCAFFromSTEP(text)` returns a document with `getRoots`, `getChildren`, `getReferredLabel`, `getLocation`, `getSubShapes` and `getLabelInfo`, which gives the name, the colour (`hasColor`, `r`, `g`, `b`), and whether the label is an assembly or a component. `writeAssemblyStep` in `solid.ts` already uses the writing half of this.
+- **Unexplained, check first.** A scratch script that imported the owner's 3.4 MB export with `kernel.importStep`, then called `getCenterOfMass`, `transform` and `exportStep` on the solids, ran at 100% CPU for more than five minutes and produced nothing. I stopped it and did not find which call was at fault. A plain import of the same file through the builder took 2.5 s in Node, and the owner's 832 KB re-export opened in the page in 734 ms. Time each call on that file before building on any of them. The file is not in the repository: ask the owner for it.
+- A STEP has no joints. What the file holds is the pose it was exported in, with the joints already applied.
+
+### Design
+
+- When a STEP is opened, read its structure once, through XCAF, and keep a list of components next to the asset: name, number of bodies, bounding box, colour, position. Cache it with the asset by the hash of its bytes.
+- The asset panel (`AssetPanel.tsx`) shows that list when the file has two or more components. Each row has **Show on its own** and **Copy the part line**.
+- `part(name, file, component = "faceplate")` builds only that component. `part(name, file, body = 2)` builds only the second solid of the file (counted from 1) for files without useful names. With neither, the part is the whole file, as today.
+- A part keeps the position the file gives it. The `at` and `rot` of `part()` apply on top of that. So an exported assembly opens already assembled, and the pose it was exported in comes back as it was.
+- Colours come from the file unless `color` is given.
+- Joints stay in the code. The manual (Phase 9) should say: **export the assembly with every joint at its zero if you want to articulate it again**, because the exported pose is the new starting pose.
+- Nested sub-assemblies are flattened: a component inside a component is named by its path with a slash, such as `arm/link`.
+- Errors name the file and line and say what to change, for example: `part("p", "part.step", component = "plate") has no component "plate" in part.step. It has: base, faceplate, original.step.`
+
+### Steps
+
+1. Time `importXCAFFromSTEP` on the owner's exported assembly (832 KB after the round-hole fix, 3.4 MB before) and on a motor STEP from GrabCAD. Find the call that hung (see above). Record both as new facts in section 2.
+2. New `src/engine/stepTree.ts`: read the structure into `{ name, path, bodies, bounds, color, location }[]`. Add a worker command and a `protocol.ts` message that returns it with the asset facts.
+3. `scad.ts`, `assembly.ts` and `csg.ts`: the `component` and `body` arguments of `part()`. `unsupported()` and the exact builder must agree about what is covered.
+4. `build.ts`: build the chosen solids only, and cache the solid by the hash of the file plus the component or body. A coarser retry does nothing in OpenCascade (CLAUDE.md), so reuse `importedMeshing` as it is.
+5. `AssetPanel.tsx`: the list of components, **Show on its own** and **Copy the part line** for each.
+6. README, the Help dialog and the manual: update them in the same commit (rule 9).
+
+### Tests (`test/import.test.ts`)
+
+- Export the swivel arm example, read it back, and expect the four part names. The volume of each part must match the volume of the same part built from its `.scad` file to within 0.1%.
+- Export an assembly with a hinge at 0 and at 30, read each back, and expect each component's position to equal `solvePose` for that value. Work one of them by hand (a 30 degree hinge puts a point at a known place).
+- `part("a", "f.step", component = "arm")` builds one body with that part's volume. `body = 2` picks the second solid. A wrong name gives the message above.
+- A file with no structure (the owner's motor, or a flat compound) lists no components, and `body = n` still works.
+- The round trip the owner did by hand: motor, face plate and base exported together, then opened as three parts with the same hinge, and the pose at three tilt values matches the original to 0.0001 mm.
+
+### Acceptance
+
+- [ ] An export from this app opens with every part listed by name and colour, and in the pose it was exported in.
+- [ ] The owner's motor, face plate and base round-trip: export, **New**, open the STEP, three `part()` lines, one hinge, and it moves as before.
+- [ ] A real GrabCAD assembly with several components lists them. The owner downloads it and does not commit it.
+- [ ] Reading the structure of a 1 MB file is timed and reported. The target is that it adds no more than the 0.8 s per MB that reading the solids already costs.
+- [ ] Tests pass and `scripts/smoke.py` passes in both modes.
+
+**Out of scope:** reading joints or mates (a STEP file does not hold them), editing the structure, writing nested sub-assemblies, per-face colours, and IGES.
 
 ---
 
