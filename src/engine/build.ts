@@ -3,7 +3,7 @@ import { partTag, readAssembly, singlePart, solvePose, type AssemblySpec, type C
 import { assetFormat, contentHash, stemOf } from './assets.ts';
 import { childrenText, firstColor, flatRounds, hasShapes, needsCheck, parseCsg, taggedParts, unsupported, type CsgNode } from './csg.ts';
 import { flipTriangles, maxTriangles, meshBounds, meshVolume, parseBinaryStl, parseStl, toBinaryStl, toPartMesh } from './mesh.ts';
-import { CadError, type BuildStage, type MeasurePick, type ModelPreview, type PartMesh, type Pose, type ProjectAssets, type ProjectFiles, type StepStructure } from './protocol.ts';
+import { CadError, type BuildStage, type CollisionAnswer, type CollisionTest, type MeasurePick, type ModelPreview, type PartMesh, type Pose, type ProjectAssets, type ProjectFiles, type StepStructure } from './protocol.ts';
 import { measure } from './measure.ts';
 import { evaluateScad, inspectProject, renderMesh, type Evaluation, type LibraryFiles, type LibraryLoader, type OpenScadFactory } from './scad.ts';
 import { buildSolid, meshToSolid, previewSolid, writeAssemblyStep } from './solid.ts';
@@ -456,6 +456,44 @@ export class ModelBuilder {
     } finally {
       this.#kernel.releaseSince(mark);
     }
+  }
+
+  /**
+   * The exact overlap volume of pairs of parts, from the kernel's common of the two placed solids. A pair with a faceted part has no
+   * solid (sewing one takes seconds), so its answer is null. Stops asking when `budgetMs` has passed. Holds no handles afterwards.
+   */
+  collide(model: BuiltModel, tests: CollisionTest[], budgetMs = 40_000): CollisionAnswer {
+    const started = performance.now();
+    const volumes: (number | null)[][] = [];
+    let complete = true;
+    const mark = this.#kernel.checkpoint();
+    try {
+      for (const test of tests) {
+        const matrices = solvePose(model.assembly, test.pose);
+        const row: (number | null)[] = [];
+        volumes.push(row);
+        for (const [a, b] of test.pairs) {
+          const [x, y] = [model.entries[a], model.entries[b]];
+          if (complete && performance.now() - started > budgetMs) complete = false;
+          if (!complete || x.kind !== 'exact' || y.kind !== 'exact') {
+            row.push(null);
+            continue;
+          }
+          const inner = this.#kernel.checkpoint();
+          try {
+            const common = this.#kernel.common(this.#kernel.located(x.shape, matrices[a]), this.#kernel.located(y.shape, matrices[b]));
+            row.push(this.#kernel.getVolume(common));
+          } catch {
+            row.push(null);
+          } finally {
+            this.#kernel.releaseSince(inner);
+          }
+        }
+      }
+    } finally {
+      this.#kernel.releaseSince(mark);
+    }
+    return { volumes, complete };
   }
 
   exportStep(model: BuiltModel, pose: Pose = {}) {

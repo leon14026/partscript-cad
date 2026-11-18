@@ -8,7 +8,7 @@ import { stemOf, unreadableFormat, formatBytes } from './engine/assets.ts';
 import { BrowserGeometryEngine } from './engine/client.ts';
 import { loopStates, openingPose, settlePose } from './engine/kinematics.ts';
 import { facetedText, flatRoundNotes } from './engine/summary.ts';
-import { CadError, MAX_ASSET_BYTES, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type BuildStage, type Diagnostic, type MeasurePick, type ModelPreview, type Pose } from './engine/protocol.ts';
+import { CadError, MAX_ASSET_BYTES, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type BuildStage, type CollisionTest, type Diagnostic, type MeasurePick, type ModelPreview, type Pose } from './engine/protocol.ts';
 import { loadDraft, saveDraft } from './drafts.ts';
 import { exampleProjects } from './examples.ts';
 import { assetFilename, isAsset, isAssetName, projectProblem, readProject, readProjectZipAsync, scadFilename, serializeProjectZipAsync, toAssets, toFiles, uniqueName, type Project, type ProjectFile } from './project.ts';
@@ -192,16 +192,40 @@ export function App() {
     }
   }
 
+  /** Questions of the model on screen (measure, collide) go one after the other, so one does not turn the next away. */
+  const queries = useRef<Promise<unknown>>(Promise.resolve());
+  function query<T>(run: () => Promise<T>): Promise<T> {
+    const next = queries.current.then(run, run);
+    queries.current = next.catch(() => {});
+    return next;
+  }
+
   /** Read picks of the model on screen. The worker keeps the last build, so a stale preview can still be measured. */
-  async function measurePicks(picks: MeasurePick[], at: Pose) {
-    if (builtRevision === null) throw new CadError('Run the code, then measure the model it builds.');
-    if (busy.current) throw new CadError('The engine is busy with a build or an export. Pick again when it has finished.');
-    busy.current = true;
-    try {
-      return await engine.measure(builtRevision, at, picks);
-    } finally {
-      busy.current = false;
-    }
+  function measurePicks(picks: MeasurePick[], at: Pose) {
+    return query(async () => {
+      if (builtRevision === null) throw new CadError('Run the code, then measure the model it builds.');
+      if (busy.current) throw new CadError('The engine is busy with a build or an export. Pick again when it has finished.');
+      busy.current = true;
+      try {
+        return await engine.measure(builtRevision, at, picks);
+      } finally {
+        busy.current = false;
+      }
+    });
+  }
+
+  /** The exact overlap of pairs of parts of the model on screen, in poses. */
+  function collidePoses(tests: CollisionTest[]) {
+    return query(async () => {
+      if (builtRevision === null) throw new CadError('Run the code, then check the model it builds.');
+      if (busy.current) throw new CadError('The engine is busy with a build or an export.');
+      busy.current = true;
+      try {
+        return await engine.collide(builtRevision, tests);
+      } finally {
+        busy.current = false;
+      }
+    });
   }
 
   async function exportStep() {
@@ -677,7 +701,7 @@ export function App() {
         </section>
 
         <Viewport model={preview} pose={pose} stale={!currentBuild} running={stage ? stages[stage] : undefined}
-          onPose={updatePose} onResetPose={() => preview && updatePose(openingPose(preview.assembly).pose)} onMeasure={measurePicks}/>
+          onPose={updatePose} onResetPose={() => preview && updatePose(openingPose(preview.assembly).pose)} onMeasure={measurePicks} onCollide={collidePoses}/>
       </main>
 
       <footer className="app-footer">
@@ -709,6 +733,8 @@ export function App() {
             <dd>To make an assembly from a design kept in one file, <code>include</code> it, add <code>part = "none";</code> so it draws nothing of its own, then call its modules inside <code>part("name") ...</code>. Every part comes from a single evaluation, and an edit rebuilds only the parts that changed. Do not wrap <code>part()</code> in <code>translate()</code>; use <code>at</code> and <code>rot</code>, or move the shapes inside the braces.</dd>
             <dt>BOSL2</dt>
             <dd>Gears, threads, screws and more come from the BOSL2 library. Start the file with <code>include &lt;BOSL2/std.scad&gt;</code>, add the file you need such as <code>include &lt;BOSL2/gears.scad&gt;</code>, then call <code>spur_gear(mod = 2, teeth = 20, thickness = 8);</code>. The library is about 1.2 MB and downloads the first time a project includes it during a visit. Each run that includes it takes about a quarter of a second longer, so write many parts in one file with <code>part("name") ...</code> rather than one file per part. Gears are exact; threads are faceted, so their STEP has flat faces.</dd>
+            <dt>Collisions</dt>
+            <dd>Parts that share volume are a collision, and parts that only touch are not. The colliding parts turn red, yellow lines show where their surfaces cross, and a card names the pair and gives the overlap in mm³ once the joint has stopped. <strong>Check motion</strong>, the magnifier on a joint, turns it through its whole travel and lists where each pair overlaps. Press a line to go to where it starts. <strong>Stop at collision</strong>, under the joints, holds a joint at the last clear pose. Name a pair that overlaps by design with <code>allow_overlap("shaft", "plate");</code> and it is skipped. A pair that includes a faceted part is found from the preview mesh only.</dd>
             <dt>Imported STEP and STL files</dt>
             <dd>Choose <strong>Open</strong> and pick a <code>.step</code>, <code>.stp</code> or <code>.stl</code> file, such as a motor or a bearing from GrabCAD or a supplier. It becomes a tab you can look at with <strong>Show on its own</strong> and measure. Use it as a part with <code>part("motor", "motor.step");</code> and connect it with joints like any other part. A STEP that holds an assembly lists its parts in its tab: <code>part("arm", "robot.step", component = "arm");</code> or <code>body = 2</code> takes one of them, in the place and colour the file gives it. A STEP keeps its true curves and exports as it came. An STL is a mesh with no units, read as millimetres, so it exports with flat faces. Inside a <code>.scad</code> file, <code>import("bracket.stl");</code> reads an STL of the project too. Files from a CAD program's own format (<code>.sldprt</code>, <code>.ipt</code>, <code>.f3d</code>, <code>.x_t</code>) and IGES files cannot be read, so download or export the STEP version. One file can be up to 40 MB and a project up to 120 MB of them.</dd>
             <dt>Sharing values</dt>
@@ -716,7 +742,7 @@ export function App() {
             <dt>On a phone</dt>
             <dd>The page shows the preview or the code, one at a time: use the <strong>Preview</strong> and <strong>Code</strong> buttons under the header. New, Open, Save and the manual are behind <strong>⋯</strong>. <strong>Joints</strong> opens a strip under the model. Drag to turn the model, pinch to zoom, and tap in <strong>Measure</strong> where a mouse would click.</dd>
             <dt>Model limits</dt>
-            <dd>In millimetres. A part must have volume, and a file that draws only flat 2D shapes needs <code>linear_extrude()</code>. Collision checks are unavailable. Libraries other than BOSL2 are unavailable in this version, and <code>text()</code> fails because no fonts are bundled. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
+            <dd>In millimetres. A part must have volume, and a file that draws only flat 2D shapes needs <code>linear_extrude()</code>. Libraries other than BOSL2 are unavailable in this version, and <code>text()</code> fails because no fonts are bundled. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
           </dl>
           <div className="dialog-actions">
             <a className="button button-step" href={`${import.meta.env.BASE_URL}source/partscript-cad-source.zip`} download><Download size={16}/> Download source</a>

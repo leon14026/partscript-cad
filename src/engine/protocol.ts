@@ -136,6 +136,22 @@ export interface MeasureResult {
   notes: string[];
 }
 
+/** Parts to test for overlap in a pose: indices into assembly.parts. */
+export interface CollisionTest {
+  pose: Pose;
+  pairs: [number, number][];
+}
+
+/**
+ * The overlap volume of each pair of each test, in mm³ (0 when the parts only touch), in the order asked.
+ * null when the kernel has no answer: a part is faceted, so there is no solid to intersect, the intersection failed, or the time ran out.
+ */
+export interface CollisionAnswer {
+  volumes: (number | null)[][];
+  /** False when the time ran out, so the last answers are null. */
+  complete: boolean;
+}
+
 export type GeometryCommand =
   | {
     kind: 'build'; id: number; revision: number; files: ProjectFiles; entry: string;
@@ -145,11 +161,13 @@ export type GeometryCommand =
     newAssets: ProjectAssets;
   }
   | { kind: 'export'; id: number; revision: number; pose: Pose }
-  | { kind: 'measure'; id: number; revision: number; pose: Pose; picks: MeasurePick[] };
+  | { kind: 'measure'; id: number; revision: number; pose: Pose; picks: MeasurePick[] }
+  | { kind: 'collide'; id: number; revision: number; tests: CollisionTest[] };
 
 export type GeometryReply =
   | { kind: 'progress'; id: number; stage: BuildStage }
   | { kind: 'preview'; id: number; model: ModelPreview }
   | { kind: 'step'; id: number; bytes: Uint8Array<ArrayBuffer> }
   | { kind: 'measure'; id: number; result: MeasureResult }
+  | { kind: 'collide'; id: number; answer: CollisionAnswer }
   | { kind: 'error'; id: number; diagnostic: Diagnostic };

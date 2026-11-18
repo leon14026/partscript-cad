@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test, { after } from 'node:test';
 import { OcctKernel } from 'occt-wasm';
 import { codeBlocks, renderBody, renderManual, cells, type CodeBlock } from '../scripts/manual.ts';
+import { overlapFloor, sampleMove, touchDepth } from '../src/collision.ts';
 import { assemblyPrelude } from '../src/engine/assembly.ts';
 import { ModelBuilder } from '../src/engine/build.ts';
 import { maxLeaves } from '../src/engine/flat.ts';
@@ -24,7 +25,7 @@ after(() => kernel.releaseAll());
 const markdown = await readFile(new URL('../docs/MANUAL.md', import.meta.url), 'utf8');
 const blocks = codeBlocks(markdown);
 
-test('the manual has its twelve sections, in order', () => {
+test('the manual has its thirteen sections, in order', () => {
   const titles = [...markdown.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
   assert.deepEqual(titles, [
     '1. Getting started',
@@ -35,20 +36,21 @@ test('the manual has its twelve sections, in order', () => {
     '6. Several files',
     '7. Importing STEP and STL files',
     '8. Measure',
-    '9. Exact and faceted',
-    '10. When something goes wrong',
-    '11. Limits',
-    '12. Cheat sheet',
+    '9. Collisions',
+    '10. Exact and faceted',
+    '11. When something goes wrong',
+    '12. Limits',
+    '13. Cheat sheet',
   ]);
 });
 
-test('the manual renders to a page: twelve sections, a contents list that links to them, and no Markdown left over', () => {
+test('the manual renders to a page: thirteen sections, a contents list that links to them, and no Markdown left over', () => {
   const page = renderManual(markdown);
-  assert.equal((page.match(/<h2 /g) ?? []).length, 12);
+  assert.equal((page.match(/<h2 /g) ?? []).length, 13);
   const { html, headings } = renderBody(markdown);
   const ids = new Set(headings.map((heading) => heading.id));
   const links = [...page.matchAll(/href="#([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(links.length, 12);
+  assert.equal(links.length, 13);
   for (const id of links) assert.ok(ids.has(id), `The contents list links to #${id}, which is not a heading.`);
   assert.equal(ids.size, headings.length, 'Two headings have the same id.');
   // Outside the code blocks nothing of the Markdown should show through.
@@ -109,6 +111,16 @@ for (const module of ['part', 'joint'] as const) {
     for (const name of rows.keys()) assert.ok(arguments_.some((item) => item.name === name), `The ${module}() table lists ${name}, which assembly.ts does not read.`);
   });
 }
+
+test('the allow_overlap() signature, and the numbers the collision section gives, match the code', () => {
+  const arguments_ = /module allow_overlap\(([^)]*)\)/.exec(assemblyPrelude)![1].split(',').map((item) => item.split('=')[0].trim());
+  const signature = markdown.match(/^allow_overlap\(([^)]*)\)$/m)?.[1];
+  assert.ok(signature, 'The manual has no allow_overlap(...) signature line.');
+  assert.deepEqual(signature.split(/,\s*/).map((name) => name.trim()), arguments_);
+  const section = markdown.slice(markdown.indexOf('## 9. Collisions'), markdown.indexOf('## 10. Exact and faceted'));
+  assert.ok(section.includes(`every ${sampleMove} mm that any point`), 'The section should give the sweep step in mm.');
+  assert.ok(section.includes(`shallower than ${touchDepth} mm`) && section.includes(`smaller than ${overlapFloor} mm³`), 'The section should give the depth and the volume that count as touching.');
+});
 
 test('the follow table lists the arguments assembly.ts reads, with their defaults', () => {
   const rows = rowsAfter('| Argument | Meaning | Default |\n| --- | --- | --- |\n| `follow` | The name of the joint to follow');

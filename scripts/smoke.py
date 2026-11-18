@@ -340,7 +340,7 @@ with sync_playwright() as p:
         print(f'{name}: ok')
 
     def check_manual():
-        # The header and the Help dialog both link to the manual page, which has its twelve sections and a way back.
+        # The header and the Help dialog both link to the manual page, which has its thirteen sections and a way back.
         name = 'manual'
         link = page.locator('a[aria-label="Manual"]')
         if link.count() != 1 or link.get_attribute('href') != 'manual.html' or link.get_attribute('target') != '_blank':
@@ -356,9 +356,9 @@ with sync_playwright() as p:
         manual.on('pageerror', lambda e: problems.append(f'page error (manual): {str(e)[:300]}'))
         manual.goto(url.replace('index.html', 'manual.html'))
         headings = manual.locator('main h2').all_inner_texts()
-        if len(headings) != 12 or not headings[0].startswith('1. Getting started') or not headings[-1].startswith('12. Cheat sheet'):
-            problems.append(f'{name}: the manual page should have twelve numbered sections: {headings}')
-        if manual.locator('nav.toc a').count() != 12 or manual.locator('a[href="./"]').count() != 1:
+        if len(headings) != 13 or not headings[0].startswith('1. Getting started') or not headings[-1].startswith('13. Cheat sheet'):
+            problems.append(f'{name}: the manual page should have thirteen numbered sections: {headings}')
+        if manual.locator('nav.toc a').count() != 13 or manual.locator('a[href="./"]').count() != 1:
             problems.append(f'{name}: the manual page should have a contents list of twelve links and a link back to the editor')
         if manual.locator('pre').count() < 40:
             problems.append(f'{name}: the manual page should show its code examples, found {manual.locator("pre").count()}')
@@ -630,6 +630,104 @@ with sync_playwright() as p:
         page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}{index + 1}.png"))
         print(f'{name}: {notice}')
 
+    def check_collisions():
+        # Collisions: a slider block is moved into a fixed one. The part turns red, the card names the pair with its exact volume,
+        # Reset clears it, Check motion lists where it starts, Stop at collision holds the block, and allow_overlap silences the pair.
+        try:
+            from PIL import Image
+        except ImportError:
+            print('collisions: skipped, Pillow is not installed')
+            return
+        import io
+
+        def count(test):
+            image = Image.open(io.BytesIO(canvas_picture())).convert('RGB')
+            pixels = image.get_flattened_data() if hasattr(image, 'get_flattened_data') else image.getdata()
+            return sum(1 for r, g, b in pixels if test(r, g, b))
+
+        red = lambda: count(lambda r, g, b: r > 170 and r > g + 70 and r > b + 70)
+        yellow = lambda: count(lambda r, g, b: r > 225 and g > 200 and b < 130)
+
+        def run(code):
+            page.click('.cm-content')
+            page.keyboard.press('Control+A')
+            page.keyboard.type(code, delay=5)
+            page.keyboard.press('Control+Enter')
+            page.wait_for_timeout(200)
+            page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
+
+        name = 'collisions'
+        body = 'part("fixed") translate([25, 0, 0]) cube(10); part("block") cube(10); joint("slide", type = "slider", parent = "fixed", child = "block", axis = [1, 0, 0], limits = [0, 30]);'
+        run(body)
+        page.wait_for_timeout(500)
+        if page.locator('.collision-card').count() or red() > 50:
+            problems.append(f'{name}: nothing collides at the start, so there should be no card and no red')
+        page.locator('.joint-value input').first.fill('20')
+        try:
+            page.wait_for_selector('.collision-card .collision-row', timeout=10000)
+            page.wait_for_function("() => document.querySelector('.collision-card')?.innerText.includes('500 mm³')", timeout=15000)
+        except Exception:
+            problems.append(f'{name}: the card should name the pair with 500 mm³ at 20 mm: {page.inner_text(".collision-card") if page.locator(".collision-card").count() else "no card"!r}')
+        else:
+            if 'fixed and block' not in page.inner_text('.collision-card'):
+                problems.append(f'{name}: the card should name fixed and block: {page.inner_text(".collision-card")!r}')
+            if red() < 200:
+                problems.append(f'{name}: the colliding parts should be tinted red')
+            if yellow() < 10:
+                problems.append(f'{name}: the lines where the surfaces cross should be drawn')
+        page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}collision.png"))
+        page.click('.joints-reset')
+        page.wait_for_timeout(500)
+        if page.locator('.collision-card').count() or red() > 50:
+            problems.append(f'{name}: Reset should clear the card and the red')
+
+        # Check motion: one stretch, from 15 mm to the end of the travel, and a click on it moves the block there.
+        page.locator('.joint-check').first.click()
+        try:
+            page.wait_for_selector('.collision-finding', timeout=90000)
+        except Exception:
+            problems.append(f'{name}: Check motion should list the overlap: {page.inner_text(".collision-card") if page.locator(".collision-card").count() else "no card"!r}')
+        else:
+            text = page.inner_text('.collision-finding')
+            if 'fixed and block overlap from 15 mm to the end of the travel of slide' not in text.replace('\n', ' ') or 'mm³ in the worst of 5 poses checked' not in text:
+                problems.append(f'{name}: the finding should say where the overlap starts and its volume: {text!r}')
+            page.locator('.collision-finding').first.click()
+            page.wait_for_timeout(600)
+            at = float(page.locator('.joint-value input').first.input_value())
+            if not 14.9 < at < 15.1 or not page.locator('.collision-card .collision-row').count():
+                problems.append(f'{name}: a click on the finding should put the block at its first contact: {at}')
+        page.click('.joints-reset')
+        page.wait_for_timeout(300)
+
+        # Stop at collision holds a typed value and a played joint at the last clear pose.
+        page.locator('.joint-stop input').check()
+        page.locator('.joint-value input').first.fill('25')
+        page.wait_for_timeout(500)
+        # The number box keeps what was typed until it loses focus, so the slider shows where the block is.
+        at = float(page.locator('.joint input[type=range]').first.input_value())
+        if not 14.9 < at < 15.1 or 'stopped' not in (page.inner_text('.collision-stop') if page.locator('.collision-stop').count() else ''):
+            problems.append(f'{name}: with Stop at collision a typed 25 should stop the block at 15 and say so: {at}')
+        page.click('.joints-reset')
+        page.wait_for_timeout(300)
+        page.locator('.joint-play:not([disabled])').first.click()
+        page.wait_for_timeout(2600)
+        at = float(page.locator('.joint input[type=range]').first.input_value())
+        if not 14.9 < at < 15.1 or page.locator('.joint-play[aria-pressed=true]').count():
+            problems.append(f'{name}: with Stop at collision a played slider should stop at 15 and stop playing: {at}')
+        page.locator('.joint-stop input').uncheck()
+        page.click('.joints-reset')
+
+        # allow_overlap names the pair, so it is no longer a collision.
+        run(body + ' allow_overlap("fixed", "block");')
+        page.wait_for_timeout(500)
+        if '1 allowed' not in page.inner_text('.pane-title'):
+            problems.append(f'{name}: the toolbar should say that one pair is allowed: {page.inner_text(".pane-title")!r}')
+        page.locator('.joint-value input').first.fill('20')
+        page.wait_for_timeout(1200)
+        if page.locator('.collision-card .collision-row').count() or red() > 50:
+            problems.append(f'{name}: an allowed pair should not be tinted or listed')
+        print(f'{name}: checked')
+
     # A part the exact builder cannot make is meshed by OpenSCAD and reported as faceted.
     page.click('.cm-content')
     page.keyboard.press('Control+A')
@@ -657,6 +755,8 @@ with sync_playwright() as p:
     page.wait_for_timeout(300)
     page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}inline.png"))
     print(f'inline parts: {notice}')
+
+    check_collisions()
 
     # BOSL2 is fetched only when a project includes it. Nothing above should have asked for it.
     if library_fetches:

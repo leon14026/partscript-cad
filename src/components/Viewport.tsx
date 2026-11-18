@@ -1,9 +1,10 @@
-import { Box, Boxes, Check, Copy, CornerDownRight, Expand, Eye, EyeOff, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, Ruler, RotateCcw, RotateCw, TriangleAlert, X } from 'lucide-react';
+import { Box, Boxes, Check, Copy, CornerDownRight, Expand, Eye, EyeOff, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, Ruler, RotateCcw, RotateCw, ScanSearch, TriangleAlert, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { clampJoint, followerStates, movingJoints, poseBounds, structureOf, turnsFully, type JointSpec } from '../engine/assembly.ts';
+import { clampJoint, followerStates, movingJoints, poseBounds, solvePose, structureOf, turnsFully, type JointSpec } from '../engine/assembly.ts';
 import { advanceJoint, loopStates, moveJoint } from '../engine/kinematics.ts';
-import type { MeasurePick, MeasureResult, ModelPreview, Pose, Reading } from '../engine/protocol.ts';
+import type { CollisionAnswer, CollisionTest, MeasurePick, MeasureResult, ModelPreview, Pose, Reading } from '../engine/protocol.ts';
 import { partQualities } from '../engine/summary.ts';
+import { CollisionChecker, clearMove, overlapFloor, sweepJoint, type PairHit, type SweepResult } from '../collision.ts';
 import type { Hit } from '../picking.ts';
 import { createViewer, type Mark, type ViewAngle } from './viewer.ts';
 
@@ -27,11 +28,16 @@ interface JointControlProps {
   playing: boolean;
   /** Playing is off while a measurement is shown, because its values belong to one pose. */
   locked: boolean;
+  /** True while a motion check of this joint runs. */
+  checking: boolean;
+  /** False when there is no second part to run into, or another check is running. */
+  canCheck: boolean;
   onChange(value: number, dragging: boolean): void;
   onPlay(): void;
+  onCheck(): void;
 }
 
-function JointControl({ joint, value, linked, playing, locked, onChange, onPlay }: JointControlProps) {
+function JointControl({ joint, value, linked, playing, locked, checking, canCheck, onChange, onPlay, onCheck }: JointControlProps) {
   const [low, high] = joint.limits;
   const unit = joint.type === 'hinge' ? '°' : 'mm';
   const step = high - low > 20 ? 1 : 0.1;
@@ -45,6 +51,10 @@ function JointControl({ joint, value, linked, playing, locked, onChange, onPlay 
         {linked && <Link2 className="joint-linked" size={12} aria-label="in a loop"/>}
       </label>
       <span className="joint-value">
+        <button type="button" className="joint-check" aria-pressed={checking} title={checking ? `Stop checking ${joint.name}` : `Check motion: turn ${joint.name} through its travel and list where parts overlap`}
+          aria-label={checking ? `Stop checking ${joint.name}` : `Check motion of ${joint.name}`} disabled={joint.limits[0] === joint.limits[1] || (!canCheck && !checking)} onClick={onCheck}>
+          {checking ? <X size={11}/> : <ScanSearch size={11}/>}
+        </button>
         <button type="button" className="joint-play" aria-pressed={playing} title={locked ? 'Clear the measurement to play a joint' : playing ? `Stop ${joint.name}` : `Run ${joint.name} through its travel`} aria-label={playing ? `Stop ${joint.name}` : `Play ${joint.name}`} disabled={joint.limits[0] === joint.limits[1] || locked} onClick={onPlay}>
           {playing ? <Pause size={11}/> : <Play size={11}/>}
         </button>
@@ -85,6 +95,73 @@ function ReadingRow({ reading }: { reading: Reading }) {
   );
 }
 
+/** One place in a joint's travel where two parts overlap. volume is null when only the preview mesh could say so. */
+interface Finding {
+  a: number;
+  b: number;
+  from: number;
+  to: number;
+  openFrom: boolean;
+  openTo: boolean;
+  /** The largest exact overlap among the poses that were checked, or null when only the preview mesh could say so. */
+  volume: number | null;
+  /** How many poses of the stretch were checked exactly. */
+  poses: number;
+}
+
+interface MotionReport {
+  joint: string;
+  unit: string;
+  samples: number;
+  /** The other joints, as they were when the check ran. */
+  pose: Pose;
+  findings: Finding[];
+  /** Stretches where the exact solids say the parts only touch. They are left out of the list. */
+  touching: number;
+  /** Stretches the exact solids were not asked about, because time ran out. */
+  unconfirmed: number;
+  stoppedAt?: number;
+  cancelled: boolean;
+}
+
+interface MotionState {
+  joint: string;
+  /** What is being done and how far it is, 0 to 1. */
+  phase: 'sweep' | 'exact';
+  done: number;
+  report?: MotionReport;
+}
+
+function MotionResults({ report, model, pose, onGo }: { report: MotionReport; model: ModelPreview; pose: Pose; onGo(finding: Finding): void }) {
+  const place = (value: number) => `${measure.format(Math.round(value * 100) / 100)}${report.unit === 'mm' ? ' mm' : report.unit}`;
+  const movedOn = Object.keys({ ...pose, ...report.pose }).some((name) => name !== report.joint && Math.abs((pose[name] ?? 0) - (report.pose[name] ?? 0)) > 1e-9);
+  const name = (part: number) => model.assembly.parts[part].name;
+  return (
+    <div className="collision-motion">
+      {report.findings.length === 0 && !report.unconfirmed && <p className="measure-hint">No overlap in {report.samples} poses of {report.joint}.</p>}
+      {report.findings.map((finding, i) => (
+        <button type="button" className="collision-finding" key={i} title={`Set ${report.joint} to ${place(finding.from)}, where the overlap starts`} onClick={() => onGo(finding)}>
+          <span>{name(finding.a)} and {name(finding.b)} overlap {finding.openFrom ? 'from the start of the travel' : `from ${place(finding.from)}`} to {finding.openTo ? 'the end of the travel' : place(finding.to)} of {report.joint}</span>
+          <i>{finding.volume === null ? 'found on the preview mesh only' : `${volumeText(finding.volume)} mm³ in the worst of ${finding.poses} ${finding.poses === 1 ? 'pose' : 'poses'} checked`}</i>
+        </button>
+      ))}
+      {report.touching > 0 && <p className="collision-note">{report.touching} {report.touching === 1 ? 'place where' : 'places where'} parts only touch {report.touching === 1 ? 'is' : 'are'} not listed.</p>}
+      {report.unconfirmed > 0 && <p className="collision-note">{report.unconfirmed} {report.unconfirmed === 1 ? 'stretch was' : 'stretches were'} not measured exactly because time ran out. {report.unconfirmed === 1 ? 'It is' : 'They are'} listed from the preview mesh and may only touch.</p>}
+      {report.stoppedAt !== undefined && <p className="collision-note">The loop could not follow {report.joint} past {place(report.stoppedAt)}, so the travel after it was not checked.</p>}
+      {movedOn && <p className="collision-note">Another joint has moved since this check. Check again to include it.</p>}
+    </div>
+  );
+}
+
+const volumeFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2, useGrouping: false });
+const volumeText = (value: number) => (value < 0.01 ? '<0.01' : volumeFormat.format(value));
+/** The time the exact solids may take, in all, to confirm one motion check. */
+const confirmBudgetMs = 45_000;
+/** Above this many triangles in all, the page does not check for collisions at every pose. */
+const maxLiveTriangles = 600_000;
+const pairNames = (model: ModelPreview, pairs: [number, number][]) => pairs
+  .map(([a, b]) => `${model.assembly.parts[a].name} and ${model.assembly.parts[b].name}`).join(', ');
+
 interface ViewportProps {
   model?: ModelPreview;
   pose: Pose;
@@ -94,9 +171,11 @@ interface ViewportProps {
   onResetPose(): void;
   /** Read one or two picks of the model on screen, in a pose. Rejects with a message the engineer can act on. */
   onMeasure(picks: MeasurePick[], pose: Pose): Promise<MeasureResult>;
+  /** The exact overlap volume of pairs of parts in poses. Rejects while the engine is busy. */
+  onCollide(tests: CollisionTest[]): Promise<CollisionAnswer>;
 }
 
-export function Viewport({ model, pose, stale, running, onPose, onResetPose, onMeasure }: ViewportProps) {
+export function Viewport({ model, pose, stale, running, onPose, onResetPose, onMeasure, onCollide }: ViewportProps) {
   const canvasHost = useRef<HTMLDivElement>(null);
   const controller = useRef<ReturnType<typeof createViewer> | null>(null);
   const shown = useRef<ModelPreview | undefined>(undefined);
@@ -118,8 +197,15 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
   const [result, setResult] = useState<MeasureResult | null>(null);
   const [measureError, setMeasureError] = useState<string | null>(null);
   const reading = useRef({ busy: false, wanted: null as { picks: MeasurePick[]; pose: Pose } | null, latest: null as object | null });
-  const live = useRef({ model, pose, onPose, onMeasure, picks, measuring });
-  live.current = { model, pose, onPose, onMeasure, picks, measuring };
+  // Collisions. The quick check runs on the preview meshes in the page; the exact one runs in the worker once a pose has settled.
+  const [stopAtCollision, setStopAtCollision] = useState(false);
+  const [stopNote, setStopNote] = useState<string | null>(null);
+  const [motion, setMotion] = useState<MotionState | null>(null);
+  const motionToken = useRef(0);
+  const [verdicts, setVerdicts] = useState<{ pose: Pose; volumes: Map<number, number | null> } | null>(null);
+  const checker = useMemo(() => (model ? new CollisionChecker(model.assembly, model.partMesh.map((i) => model.meshes[i])) : null), [model]);
+  const live = useRef({ model, pose, onPose, onMeasure, picks, measuring, checker, stopAtCollision });
+  live.current = { model, pose, onPose, onMeasure, picks, measuring, checker, stopAtCollision };
 
   useEffect(() => {
     if (!canvasHost.current) return;
@@ -161,8 +247,19 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
       const seconds = Math.min(0.05, (now - last) / 1000);
       last = now;
       const speed = joint.type === 'hinge' ? 110 : (joint.limits[1] - joint.limits[0]) / 2.5;
-      const moved = advanceJoint(current.assembly, at, joint.name, direction * speed * seconds);
+      let moved = advanceJoint(current.assembly, at, joint.name, direction * speed * seconds);
       const value = moved.pose[joint.name];
+      if (live.current.stopAtCollision && live.current.checker) {
+        const clear = clearMove(live.current.checker, at, joint.name, value);
+        if (clear.blocked) {
+          setStopNote(`${joint.name} stopped: ${pairNames(current, clear.by)}`);
+          dragging.current = false;
+          setPlaying(null);
+          send(clear.pose);
+          return;
+        }
+        moved = { pose: clear.pose, reached: moved.reached };
+      }
       const atStop = !turnsFully(joint) && (value >= joint.limits[1] - 1e-9 || value <= joint.limits[0] + 1e-9);
       if (!moved.reached || atStop) direction = atStop ? (value <= joint.limits[0] + 1e-9 ? 1 : -1) : -direction;
       dragging.current = true;
@@ -188,6 +285,132 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
       return kept.length === current.size ? current : new Set(kept);
     });
   }, [model]);
+  // Collisions: the quick check on the preview meshes, at every pose. Parts that are hidden are still checked.
+  const tooBig = !!model && model.partMesh.reduce((sum, i) => sum + model.meshes[i].indices.length / 3, 0) > maxLiveTriangles;
+  const hits = useMemo<PairHit[]>(() => {
+    if (!model || !checker || tooBig || model.assembly.parts.length < 2) return [];
+    try {
+      return checker.check(solvePose(model.assembly, pose), true);
+    } catch {
+      return [];
+    }
+  }, [model, checker, pose, tooBig]);
+  const pairCount = model?.assembly.parts.length ?? 0;
+  const confirmed = verdicts?.pose === pose ? verdicts.volumes : undefined;
+  // What the exact solids said overrides the mesh: a pair that only touches is not a collision.
+  const overlaps = useMemo(() => hits.filter((hit) => {
+    const volume = confirmed?.get(hit.a * pairCount + hit.b);
+    return volume === undefined || volume === null || volume >= overlapFloor;
+  }), [hits, confirmed, pairCount]);
+  useEffect(() => {
+    if (!model || !hits.length) return;
+    const exact = (part: number) => model.meshes[model.partMesh[part]].quality === 'exact';
+    const volumes = new Map<number, number | null>(hits.filter((hit) => !exact(hit.a) || !exact(hit.b)).map((hit) => [hit.a * pairCount + hit.b, null]));
+    const pairs = hits.filter((hit) => exact(hit.a) && exact(hit.b)).map((hit): [number, number] => [hit.a, hit.b]);
+    if (!pairs.length) {
+      setVerdicts({ pose, volumes });
+      return;
+    }
+    let cancelled = false;
+    // Wait until the pose has stopped changing: the exact answer takes tens of milliseconds a pair.
+    const timer = window.setTimeout(() => {
+      onCollide([{ pose, pairs }]).then((answer) => {
+        if (cancelled) return;
+        pairs.forEach(([a, b], i) => volumes.set(a * pairCount + b, answer.volumes[0][i]));
+        setVerdicts({ pose, volumes });
+      }, () => { /* The engine is busy or has no build: the preview mesh's answer stays. */ });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [hits, pose, model, pairCount]);
+  useEffect(() => {
+    const lines = overlaps.some((hit) => hit.segments.length) ? Float32Array.from(overlaps.flatMap((hit) => [...hit.segments])) : undefined;
+    controller.current?.setCollisions(new Set(overlaps.flatMap((hit) => [hit.a, hit.b])), lines);
+  }, [overlaps, model]);
+  // A new build forgets what the last one said.
+  useEffect(() => {
+    motionToken.current++;
+    setMotion(null);
+    setVerdicts(null);
+    setStopNote(null);
+  }, [model]);
+
+  /** Move a joint to a value, or as far toward it as it goes without running into a part it did not already touch. */
+  function stepJoint(name: string, value: number) {
+    if (!model) return pose;
+    if (stopAtCollision && checker) {
+      const clear = clearMove(checker, pose, name, value);
+      setStopNote(clear.blocked ? `${name} stopped: ${pairNames(model, clear.by)}` : null);
+      return clear.pose;
+    }
+    return moveJoint(model.assembly, pose, name, value).pose;
+  }
+
+  /** Turn one joint through its travel and list where parts overlap, then ask the exact solids about each stretch. */
+  async function checkMotion(name: string) {
+    if (!model || !checker) return;
+    const token = ++motionToken.current;
+    const stopped = () => token !== motionToken.current;
+    setPlaying(null);
+    setStopNote(null);
+    const start = pose;
+    setMotion({ joint: name, phase: 'sweep', done: 0 });
+    let result: SweepResult;
+    try {
+      result = await sweepJoint(checker, start, name, {
+        progress: async (done) => {
+          setMotion({ joint: name, phase: 'sweep', done });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        },
+        cancelled: stopped,
+      });
+    } catch {
+      if (!stopped()) setMotion(null);
+      return;
+    }
+    if (stopped()) return;
+    const unit = result.unit;
+    // Exact volumes, a few poses of each stretch at a time, for the stretches where both parts are exact.
+    const exact = (part: number) => model.meshes[model.partMesh[part]].quality === 'exact';
+    const rows = result.intervals.map((interval) => ({ interval, volumes: [] as (number | null)[], asked: exact(interval.a) && exact(interval.b) }));
+    setMotion({ joint: name, phase: 'exact', done: 0 });
+    const began = performance.now();
+    const jobs = rows.flatMap((row, r) => (row.asked ? row.interval.probes.map((probe) => ({ r, probe })) : []));
+    const chunk = 12;
+    for (let k = 0; k < jobs.length && !stopped(); k += chunk) {
+      if (performance.now() - began > confirmBudgetMs) break;
+      const part = jobs.slice(k, k + chunk);
+      try {
+        const answer = await onCollide(part.map(({ r, probe }) => ({ pose: probe.pose, pairs: [[rows[r].interval.a, rows[r].interval.b]] })));
+        part.forEach(({ r }, i) => rows[r].volumes.push(answer.volumes[i]?.[0] ?? null));
+      } catch {
+        break;
+      }
+      setMotion({ joint: name, phase: 'exact', done: Math.min(1, (k + chunk) / jobs.length) });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    if (stopped()) return;
+    const findings: Finding[] = [];
+    let touching = 0;
+    let unconfirmed = 0;
+    for (const { interval, volumes, asked } of rows) {
+      const complete = asked && volumes.length === interval.probes.length && volumes.every((volume) => volume !== null);
+      const worst = complete ? Math.max(...(volumes as number[])) : null;
+      if (asked && !complete) unconfirmed++;
+      if (worst !== null && worst < overlapFloor) {
+        touching++;
+        continue;
+      }
+      findings.push({ a: interval.a, b: interval.b, from: interval.from, to: interval.to, openFrom: interval.openFrom, openTo: interval.openTo, volume: worst, poses: volumes.length });
+    }
+    setMotion({
+      joint: name, phase: 'exact', done: 1,
+      report: { joint: name, unit, samples: result.samples, pose: start, findings, touching, unconfirmed, stoppedAt: result.stoppedAt, cancelled: false },
+    });
+  }
+
   // Measure: the picks are kept in the page, the numbers come from the engine in the pose that is shown.
   useEffect(() => {
     controller.current?.setMeasure(measuring ? {
@@ -293,6 +516,9 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
         <div className="pane-title">
           {model?.isAssembly ? <Boxes size={17} /> : <Box size={17} />} <h2>3D Preview</h2>
           {model?.isAssembly && <span className="part-count" title={partQualities(model)}>{partCount} {partCount === 1 ? 'part' : 'parts'}</span>}
+          {model && model.assembly.allowed.length > 0 && (
+            <span className="part-count" title="allow_overlap() names these pairs, so they are not checked for collisions">{model.assembly.allowed.length} allowed</span>
+          )}
           {model && !model.isAssembly && model.meshes[0]?.quality === 'faceted' && (
             <span className="part-count" title={`Faceted: uses ${model.meshes[0].reason}. STEP has flat faces.`}>faceted</span>
           )}
@@ -382,25 +608,61 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
             {measureError && <p className="measure-error" role="alert">{measureError}</p>}
           </section>
         )}
+        {model && !graphicsFailed && (overlaps.length > 0 || motion || stopNote || tooBig) && (
+          <section className="collision-card" aria-label="Collisions">
+            <header>
+              <TriangleAlert size={14}/><strong>{overlaps.length ? 'Collision' : 'Collisions'}</strong>
+              {motion && <button type="button" className="measure-clear" title="Close the motion check" onClick={() => {
+                motionToken.current++;
+                setMotion(null);
+              }}><X size={12}/> Close</button>}
+            </header>
+            {tooBig && <p className="measure-hint">This model has too many triangles to check at every pose. Use Check motion on a joint.</p>}
+            {overlaps.map((hit) => {
+              const volume = confirmed?.get(hit.a * pairCount + hit.b);
+              return (
+                <p className="collision-row" key={`${hit.a}-${hit.b}`}>
+                  <span>{pairNames(model, [[hit.a, hit.b]])}</span>
+                  <i>{volume === undefined ? 'checking…' : volume === null ? 'found on the preview mesh only' : `${volumeText(volume)} mm³`}</i>
+                </p>
+              );
+            })}
+            {stopNote && <p className="collision-stop" role="status">{stopNote}</p>}
+            {motion && !motion.report && (
+              <p className="measure-hint" role="status">
+                {motion.phase === 'sweep' ? `Turning ${motion.joint}` : 'Measuring the overlaps'}… {Math.round(motion.done * 100)}%
+              </p>
+            )}
+            {motion?.report && <MotionResults report={motion.report} model={model} pose={pose} onGo={(finding) => onPose(moveJoint(model.assembly, pose, motion.joint, finding.from).pose)}/>}
+          </section>
+        )}
         {joints.length > 0 && !graphicsFailed && (
           <section className={`joints${jointsOpen ? ' open' : ''}`} aria-label="Joints">
             <header>
               <button type="button" className="joints-toggle" aria-expanded={jointsOpen} onClick={() => setJointsOpen(!jointsOpen)}>
                 Joints <span>{joints.length}</span>
               </button>
-              {jointsOpen && <button type="button" className="joints-reset" title="Return every joint to the value in the code" onClick={onResetPose}><RotateCcw size={12}/> Reset</button>}
+              {jointsOpen && <button type="button" className="joints-reset" title="Return every joint to the value in the code" onClick={() => {
+                setStopNote(null);
+                onResetPose();
+              }}><RotateCcw size={12}/> Reset</button>}
             </header>
             {jointsOpen && (
               <div className="joint-list">
                 {joints.map((joint) => (
                   <JointControl key={joint.name} joint={joint} value={clampJoint(joint, pose[joint.name])}
                     linked={looped[model!.assembly.joints.indexOf(joint)]} playing={playing === joint.name} locked={picks.length > 0}
+                    checking={motion?.joint === joint.name && !motion.report} canCheck={partCount > 1 && !(motion && !motion.report)}
                     onPlay={() => setPlaying(playing === joint.name ? null : joint.name)}
+                    onCheck={() => {
+                      if (motion && !motion.report) motionToken.current++, setMotion(null);
+                      else void checkMotion(joint.name);
+                    }}
                     onChange={(value, isDragging) => {
                       if (playing) setPlaying(null);
                       dragging.current = isDragging;
                       // In a loop the other joints follow, and the move stops where the loop would open.
-                      onPose(isDragging || value !== clampJoint(joint, pose[joint.name]) ? moveJoint(model!.assembly, pose, joint.name, value).pose : { ...pose });
+                      onPose(isDragging || value !== clampJoint(joint, pose[joint.name]) ? stepJoint(joint.name, value) : { ...pose });
                     }}/>
                 ))}
                 {loops.map((loop) => (
@@ -417,6 +679,14 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
                     <i>follows {driver.name} · {measure.format(Math.round(value * 100) / 100)}{joint.type === 'hinge' ? '°' : ' mm'}</i>
                   </div>
                 ))}
+                {partCount > 1 && (
+                  <label className="joint-stop" title="A joint you move or play stops at the last pose before it runs into a part it was clear of. This is a setting of the page and is not saved in the code.">
+                    <input type="checkbox" checked={stopAtCollision} onChange={(event) => {
+                      setStopAtCollision(event.currentTarget.checked);
+                      setStopNote(null);
+                    }}/> Stop at collision
+                  </label>
+                )}
               </div>
             )}
           </section>

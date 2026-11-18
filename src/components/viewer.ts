@@ -30,6 +30,8 @@ export interface MeasureHooks {
 }
 
 // Colours of the marks: the first pick, the second pick, what the pointer is over, and the line between picks.
+// A part that collides is tinted red and the lines where surfaces cross are drawn in yellow.
+const collisionColors = { part: '#ff3b30', line: '#ffe14d' };
 const markColors = { first: '#ffc933', second: '#4cc9ff', hover: '#ffffff', line: '#f4f7fa' };
 const rgb255 = (hex: string): [number, number, number] => {
   const c = new THREE.Color(hex);
@@ -125,6 +127,13 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
   let picked: Mark[] = [];
   let measureLine: [Vec3, Vec3] | undefined;
   let poseMatrices: Matrix[] = [];
+  // Collisions: the parts that collide, and the lines where their surfaces cross, in the model's coordinates.
+  let collidingParts: ReadonlySet<number> = new Set();
+  let crossingLines: Float32Array | undefined;
+  let partMaterials: THREE.MeshStandardMaterial[] = [];
+  let crossObject: THREE.Object3D | undefined;
+  let crossDisposables: { dispose(): void }[] = [];
+  let crossMaterial: LineMaterial | undefined;
   let overlay: THREE.Object3D[] = [];
   let overlayDisposables: { dispose(): void }[] = [];
   let fatMaterials: LineMaterial[] = [];
@@ -153,6 +162,7 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
     camera.updateProjectionMatrix();
     renderer?.setSize(width, height, false);
     for (const material of fatMaterials) material.resolution.set(width, height);
+    crossMaterial?.resolution.set(width, height);
     software?.resize(width, height);
     draw();
   }
@@ -222,8 +232,12 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
     disposables = [];
     partGroups = [];
     partEdges = [];
+    partMaterials = [];
     softwareParts = [];
     poseMatrices = [];
+    collidingParts = new Set();
+    crossingLines = undefined;
+    clearCrossings();
     hover = undefined;
     picked = [];
     measureLine = undefined;
@@ -260,6 +274,7 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
           polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
         });
         disposables.push(material);
+        partMaterials.push(material);
         const { geometry, lines } = geometries[partMesh[i]];
         const edges = new THREE.LineSegments(lines, edgeMaterial);
         edges.visible = edgesVisible;
@@ -415,8 +430,42 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
     }
   }
 
+  function clearCrossings() {
+    crossObject?.removeFromParent();
+    crossObject = undefined;
+    for (const item of crossDisposables) item.dispose();
+    crossDisposables = [];
+    crossMaterial = undefined;
+  }
+
+  /** Tint the parts that collide and draw the lines where their surfaces cross. Called with nothing to clear them. */
+  function applyCollisions() {
+    partMaterials.forEach((material, i) => {
+      const on = collidingParts.has(i);
+      material.emissive.set(on ? collisionColors.part : '#000000');
+      material.emissiveIntensity = on ? 0.55 : 0;
+    });
+    softwareParts.forEach((part, i) => {
+      part.tint = collidingParts.has(i) ? { color: rgb255(collisionColors.part), amount: 0.55 } : undefined;
+    });
+    clearCrossings();
+    if (!renderer || !crossingLines?.length) return;
+    const geometry = new LineSegmentsGeometry();
+    geometry.setPositions(crossingLines);
+    const material = new LineMaterial({ color: new THREE.Color(collisionColors.line), linewidth: 3, depthTest: false, transparent: true });
+    material.resolution.set(Math.max(1, host.clientWidth), Math.max(1, host.clientHeight));
+    const line = new LineSegments2(geometry, material);
+    line.renderOrder = 6;
+    // In the model's coordinates, so it goes in the group that centres the model.
+    objects.add(line);
+    crossObject = line;
+    crossMaterial = material;
+    crossDisposables = [geometry, material];
+  }
+
   function softwareGuides(): SoftwareGuides | undefined {
-    if (!software || !currentModel || (!picked.length && !hover && !measureLine)) return undefined;
+    const crossings = software && crossingLines?.length ? crossingLines : undefined;
+    if (!software || !currentModel || (!picked.length && !hover && !measureLine && !crossings)) return undefined;
     const o = objects.position;
     const scene = (p: Vec3): [number, number, number] => [p[0] + o.x, p[1] + o.y, p[2] + o.z];
     const dots: SoftwareGuides['dots'] = [];
@@ -425,7 +474,12 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
       if (mark.type !== 'vertex' || !part || !poseMatrices[mark.part]) continue;
       dots.push({ at: scene(transformPoint(poseMatrices[mark.part], part.mesh.corners, mark.index * 3)), color });
     }
-    return { dots, line: measureLine && { from: scene(measureLine[0]), to: scene(measureLine[1]), color: markColors.line } };
+    const points = crossings && Float32Array.from(crossings, (value, k) => value + [o.x, o.y, o.z][k % 3]);
+    return {
+      dots,
+      line: measureLine && { from: scene(measureLine[0]), to: scene(measureLine[1]), color: markColors.line },
+      crossings: points && { points, color: collisionColors.line },
+    };
   }
 
   function refreshMarks() {
@@ -538,6 +592,13 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
       picked = marks;
       measureLine = line;
       refreshMarks();
+    },
+    /** Tint these parts red and draw where their surfaces cross (6 numbers a line, in world coordinates). */
+    setCollisions(parts: ReadonlySet<number>, lines?: Float32Array) {
+      collidingParts = parts;
+      crossingLines = lines;
+      applyCollisions();
+      draw();
     },
     /** Leave these parts out of the picture. A name that is not in the model is ignored. */
     setHidden(names: ReadonlySet<string>) {

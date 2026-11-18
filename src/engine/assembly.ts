@@ -21,6 +21,9 @@ module part(name = undef, file = undef, at = [0, 0, 0], rot = [0, 0, 0], color =
 module joint(name = undef, type = "fixed", parent = undef, child = undef, at = [0, 0, 0], rot = [0, 0, 0], axis = [0, 0, 1], limits = undef, value = undef, child_at = [0, 0, 0], child_rot = [0, 0, 0], follow = undef, ratio = undef, offset = undef, table = undef) {
     echo(["@partscript", "joint", name, type, parent, child, _ps_v(at), _ps_v(rot), _ps_v(axis), _ps_v(limits), _ps_n(value), _ps_v(child_at), _ps_v(child_rot), follow, _ps_n(ratio), _ps_n(offset), _ps_t(table)]);
 }
+module allow_overlap(a = undef, b = undef) {
+    echo(["@partscript", "allow", a, b]);
+}
 `;
 
 export const recordMarker = '["@partscript"';
@@ -90,6 +93,8 @@ export interface JointSpec {
 export interface AssemblySpec {
   parts: PartSpec[];
   joints: JointSpec[];
+  /** Pairs of part names whose overlap is by design, from allow_overlap(). Every collision check skips them. */
+  allowed: [string, string][];
 }
 
 const maxParts = 200;
@@ -252,6 +257,7 @@ function readSelection(component: Value | undefined, body: Value | undefined, wh
 export function readAssembly(records: string[]): AssemblySpec {
   const parts: PartSpec[] = [];
   const joints: JointSpec[] = [];
+  const allowances: { a: Value; b: Value }[] = [];
   const placed = new Set<string>();
 
   for (const record of records) {
@@ -324,6 +330,8 @@ export function readAssembly(records: string[]): AssemblySpec {
         }
       }
       joints.push({ name, type, parent, child, at, rot, childAt, childRot, axis, limits, value, given: fields[10] !== null, follow });
+    } else if (fields[1] === 'allow') {
+      allowances.push({ a: fields[2], b: fields[3] });
     }
   }
 
@@ -336,7 +344,15 @@ export function readAssembly(records: string[]): AssemblySpec {
     if (item.parent === item.child) fail(what, 'parent and child must be different parts.');
   }
   checkFollowers(joints);
-  const assembly = { parts, joints };
+  const allowed: [string, string][] = [];
+  for (const { a, b } of allowances) {
+    if (typeof a !== 'string' || typeof b !== 'string' || !a || !b) fail('allow_overlap()', 'give two part names in quotes, for example allow_overlap("shaft", "plate").');
+    const what = `allow_overlap("${a}", "${b}")`;
+    for (const name of [a, b]) if (!names.has(name)) fail(what, `"${name}" is not a part. Declare it with part(), or check the name.`);
+    if (a === b) fail(what, 'give two different parts. A part does not collide with itself.');
+    if (!allowed.some(([x, y]) => (x === a && y === b) || (x === b && y === a))) allowed.push([a, b]);
+  }
+  const assembly = { parts, joints, allowed };
   const { carrier, closures, looped } = structureOf(assembly);
   joints.forEach((joint, j) => {
     if (!joint.follow) return;
@@ -381,7 +397,7 @@ function checkFollowers(joints: JointSpec[]) {
 
 /** A single part file is shown and exported as an assembly of one part. */
 export function singlePart(file: string): AssemblySpec {
-  return { parts: [{ name: stemOf(file), file, inline: false, at: [0, 0, 0], rot: [0, 0, 0], color: palette[0], colorGiven: false }], joints: [] };
+  return { parts: [{ name: stemOf(file), file, inline: false, at: [0, 0, 0], rot: [0, 0, 0], color: palette[0], colorGiven: false }], joints: [], allowed: [] };
 }
 
 export const identity: Matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];

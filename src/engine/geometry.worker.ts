@@ -95,6 +95,14 @@ scope.onmessage = async ({ data }: MessageEvent<GeometryCommand>) => {
       return;
     }
 
+    if (data.kind === 'collide') {
+      if (!model || model.revision !== revision || !builderPromise) {
+        throw new CadError('Run the current code before checking for collisions.');
+      }
+      post({ kind: 'collide', id, answer: (await builderPromise).collide(model.built, data.tests) });
+      return;
+    }
+
     model = undefined;
     for (const name of Object.keys(assets)) if (!data.assetNames.includes(name)) delete assets[name];
     Object.assign(assets, data.newAssets);

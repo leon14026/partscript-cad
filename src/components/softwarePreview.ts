@@ -8,6 +8,8 @@ export interface SoftwarePart {
   color: [number, number, number];
   /** A hidden part is left out of the picture, including its edges and what they would hide. */
   hidden?: boolean;
+  /** A colour mixed into the whole part: it collides with another. `amount` is the share of the colour, 0 to 1. */
+  tint?: { color: [number, number, number]; amount: number };
   /** For the measure tool: faces mixed with a colour. `amount` is the share of the colour, 0 to 1. */
   faceTints?: { face: number; color: [number, number, number]; amount: number }[];
   /** For the measure tool: edges drawn wide in a colour, as line segments in the part's own coordinates. */
@@ -16,6 +18,8 @@ export interface SoftwarePart {
 
 /** Dots and a line for the measure tool, in the scene's coordinates. They show through the parts. */
 export interface SoftwareGuides {
+  /** Where surfaces cross, as pairs of points (6 numbers a segment) in the scene's coordinates. */
+  crossings?: { points: Float32Array; color: string };
   dots: { at: [number, number, number]; color: string }[];
   line?: { from: [number, number, number]; to: [number, number, number]; color: string };
 }
@@ -114,7 +118,7 @@ export function createSoftwarePreview(canvas: HTMLCanvasElement) {
     const triangles = model.indices;
     const tints = part.faceTints ?? [];
     for (let i = 0; i < triangles.length; i += 3) {
-      const tint = tints.length ? tints.find((item) => item.face === model.faceOf[i / 3]) : undefined;
+      const tint = (tints.length ? tints.find((item) => item.face === model.faceOf[i / 3]) : undefined) ?? part.tint;
       const a = triangles[i] * 3;
       const b = triangles[i + 1] * 3;
       const c = triangles[i + 2] * 3;
@@ -207,9 +211,21 @@ export function createSoftwarePreview(canvas: HTMLCanvasElement) {
     }
   }
 
-  function drawGuides({ dots, line }: SoftwareGuides) {
+  function drawGuides({ dots, line, crossings }: SoftwareGuides) {
     const target = context!;
     const screen = (p: [number, number, number]) => project(p, view);
+    if (crossings) {
+      target.lineWidth = 2;
+      target.strokeStyle = crossings.color;
+      target.beginPath();
+      const p = crossings.points;
+      for (let i = 0; i + 5 < p.length; i += 6) {
+        const [a, b] = [screen([p[i], p[i + 1], p[i + 2]]), screen([p[i + 3], p[i + 4], p[i + 5]])];
+        target.moveTo(a[0], a[1]);
+        target.lineTo(b[0], b[1]);
+      }
+      target.stroke();
+    }
     if (line) {
       const [a, b] = [screen(line.from), screen(line.to)];
       target.lineWidth = 2;

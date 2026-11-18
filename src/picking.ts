@@ -64,7 +64,7 @@ export function viewRay(view: PickView, x: number, y: number) {
 
 // A bounding volume hierarchy over the triangles of one part, built the first time the part is picked.
 
-interface Bvh {
+export interface Bvh {
   /** min x, y, z, max x, y, z of every node. The left child of an inner node is the next node. */
   box: Float32Array;
   /** An inner node: the index of its right child. A leaf: the first entry of `order`. */
@@ -74,7 +74,7 @@ interface Bvh {
   order: Uint32Array;
 }
 
-const leafSize = 6;
+const leafSize = 3;
 const slack = 1e-5;
 const trees = new WeakMap<PartMesh, Bvh>();
 
@@ -146,9 +146,16 @@ function buildBvh(mesh: PartMesh): Bvh {
   return { box: Float32Array.from(box), link: Int32Array.from(link), count: Int32Array.from(count), order };
 }
 
+/** The hierarchy of a part's mesh, built the first time it is asked for and kept while the mesh lives. */
+export function bvhOf(mesh: PartMesh): Bvh {
+  let tree = trees.get(mesh);
+  if (!tree) trees.set(mesh, tree = buildBvh(mesh));
+  return tree;
+}
+
 /** Build the hierarchy of a part now, so the first hover does not wait for it. */
 export function preparePicking(mesh: PartMesh) {
-  if (!trees.has(mesh)) trees.set(mesh, buildBvh(mesh));
+  bvhOf(mesh);
 }
 
 const stack = new Int32Array(128);

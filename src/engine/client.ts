@@ -1,10 +1,11 @@
-import { CadError, JOB_TIMEOUT_MS, type BuildStage, type GeometryCommand, type GeometryReply, type MeasurePick, type Pose, type ProjectAssets, type ProjectFiles } from './protocol.ts';
+import { CadError, JOB_TIMEOUT_MS, type BuildStage, type CollisionTest, type GeometryCommand, type GeometryReply, type MeasurePick, type Pose, type ProjectAssets, type ProjectFiles } from './protocol.ts';
 
-type JobResult = Extract<GeometryReply, { kind: 'preview' | 'step' | 'measure' }>;
+type JobResult = Extract<GeometryReply, { kind: 'preview' | 'step' | 'measure' | 'collide' }>;
 type JobCommand =
   | { kind: 'build'; revision: number; files: ProjectFiles; entry: string; assetNames: string[]; newAssets: ProjectAssets }
   | { kind: 'export'; revision: number; pose: Pose }
-  | { kind: 'measure'; revision: number; pose: Pose; picks: MeasurePick[] };
+  | { kind: 'measure'; revision: number; pose: Pose; picks: MeasurePick[] }
+  | { kind: 'collide'; revision: number; tests: CollisionTest[] };
 
 interface PendingJob {
   id: number;
@@ -40,6 +41,13 @@ export class BrowserGeometryEngine {
     const reply = await this.#send({ kind: 'measure', revision, pose, picks }, () => {});
     if (reply.kind !== 'measure') throw new CadError('The geometry engine returned an unexpected result.');
     return reply.result;
+  }
+
+  /** The exact overlap volume of pairs of parts in poses. The worker keeps the last build, so a stale preview can still be checked. */
+  async collide(revision: number, tests: CollisionTest[]) {
+    const reply = await this.#send({ kind: 'collide', revision, tests }, () => {});
+    if (reply.kind !== 'collide') throw new CadError('The geometry engine returned an unexpected result.');
+    return reply.answer;
   }
 
   cancel(reason = 'Cancelled. Run the current code to build the model again.') {

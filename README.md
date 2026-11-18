@@ -52,6 +52,8 @@ On a phone, under 711 pixels wide, the page shows the preview or the code, one a
 
 To read a size, press **Measure** in the preview toolbar and click. A face reads its area, a hole or a shaft its diameter and length, an edge its length (and its diameter when it is a circle or an arc), and a corner its position. Click a second thing and the card also gives the distance and the angle between the two: the centre-to-centre distance of two holes (click the hole walls or their rims), the distance between two parallel faces, the angle between two faces, or the shortest distance between any two exact parts of the model. Values are in millimetres, square millimetres and degrees, to 0.001 and 0.01, each with a copy button, and they are read in the pose shown: move a joint and the numbers follow. A line is drawn for a distance when the line is the distance. **Esc** clears the picks, a second **Esc** leaves the tool, and playing a joint is off while a measurement is shown. A faceted part offers areas and corners only; its edges and curves are made of triangles, so they are not measured.
 
+Parts that share volume are a collision. In every pose the colliding parts turn red, yellow lines show where their surfaces cross, and a card names the pair and, a moment after a joint stops, the overlap in mm³ from the exact solids. A pair that only touches is not a collision. **Check motion** (the magnifier on a joint) turns that joint through its whole travel and lists where each pair overlaps, for example `crank and frame overlap from 112.4° to 118.9° of crank`; a click on a line goes to where it starts. **Stop at collision** (under the joints, a setting of the page) holds a joint at the last clear pose. `allow_overlap("shaft", "plate");` in your code names a pair that overlaps by design, and it is skipped. A pair with a faceted part is found from the preview mesh only. Section 9 of the manual has the details.
+
 ### Starting a project
 **New** replaces the project with one blank file, `part.scad`, after asking if there are unsaved changes. Add files with the **+** beside the tabs, import STEP and STL files with **Open**, and keep the work with **Save project**. A project has no name of its own: the zip is named after the file Run builds, so pin your assembly file (the pin on its tab) before you save.
 
@@ -106,7 +108,7 @@ A closing joint has no slider. The joints around its loop move together to keep 
 
 In a loop, the first joint with a `value` is held when the model opens, and the `value` of any other joint is a starting guess. A guess picks between the forms a linkage can assemble in, such as open and crossed. If the links cannot reach each other, the build output names the closing joint and the gap that is left.
 
-Hinges, sliders and fixed joints can all close a loop, so slider-cranks and scissor mechanisms work the same way. Travel limits apply to the joints that have sliders and not to closing joints. Mates solved from faces and collision checks are unavailable in this version. Open the **Crank-rocker linkage** example to watch a crank turn fully while its rocker swings.
+Hinges, sliders and fixed joints can all close a loop, so slider-cranks and scissor mechanisms work the same way. Travel limits apply to the joints that have sliders and not to closing joints. Mates solved from faces are unavailable in this version. Open the **Crank-rocker linkage** example to watch a crank turn fully while its rocker swings.
 
 ## Gears and cams
 

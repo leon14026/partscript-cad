@@ -491,7 +491,72 @@ Click a second thing and the card also gives the distance and the angle between 
 - **Esc** clears the picks, and a second **Esc** leaves the tool. On a phone, tap empty space or **Clear** to clear the picks, and tap **Measure** again to leave the tool. Tap where the manual says click.
 - A faceted part offers areas and corners only. Its edges and curves are made of triangles, so they are not measured.
 
-## 9. Exact and faceted
+## 9. Collisions
+
+The preview checks whether parts overlap, in every pose you set. Two parts collide when they share volume. Parts that only touch, on a face, along an edge or at a corner, do not collide.
+
+- **In a pose.** A part that overlaps another turns red, yellow lines show where their surfaces cross, and a card in the preview names the pair. A moment after a joint stops, the card gives the overlap in cubic millimetres, worked out on the exact solids. If the exact solids say the parts only touch, the red goes away. Parts you have hidden with **Parts** are still checked.
+- **A part inside another.** A part that sits wholly inside a solid part is a collision too, even though no surface crosses. A part that sits in a hollow of another is not.
+- **Faceted parts.** A faceted part has no exact solid to measure (section 10), so a pair that includes one is found from the preview mesh alone, and the card says so. It shows no volume.
+
+**Check motion.** Press the magnifier button on a joint's row. The joint turns through its whole travel with the other joints where they are, and the card lists each stretch of the travel where two parts overlap:
+
+```text
+crank and frame overlap from 112.4° to 118.9° of crank
+6.2 mm³ in the worst of 5 poses checked
+```
+
+Each stretch is measured exactly at up to five poses spread through it, and the card gives the largest, so the true worst overlap can be a little more. Press a line to set the joint to the start of that stretch and see the collision. A stretch that starts at the first value of the travel, or lasts to the last, says "the start of the travel" or "the end of the travel". When nothing overlaps, the card says "No overlap in 360 poses of crank". In a loop, the other joints follow, as they do when you move the joint. Press the button again to stop the check.
+
+- The sweep takes a pose every 0.5 mm that any point of any part moves, and every 1° at most for a hinge. It finds the start and the end of each stretch to 0.01° or 0.001 mm.
+- Places where the exact solids say the parts only touch are left out, and the card says how many.
+- A big model takes a while, and the card shows how far the check has got. A model with many parts and curved shapes can take half a minute for a full turn.
+- Check motion tests one joint. The other joints stay where they are, so check again after you move them.
+
+**Stop at collision.** Tick this under the joints. A joint that you drag, type into or play then stops at the last pose before it runs into a part it was clear of, and the card says what stopped it. A pair that already overlaps does not stop it, so a machine that starts in contact can be moved out of it. It is a setting of the page, and the code does not hold it. **Reset** clears the note.
+
+**Overlaps that are meant.** A shaft pressed into a plate, or a gear that is drawn into its shaft, overlaps by design. Name the pair in your code and it is skipped in every check:
+
+```text
+allow_overlap(a, b)
+```
+
+```scad
+part("plate") difference() { cube([40, 40, 8]); translate([20, 20, -1]) cylinder(h = 10, d = 8); }
+part("shaft") translate([20, 20, -6]) cylinder(h = 30, d = 8.2);
+allow_overlap("plate", "shaft");
+```
+
+The toolbar then shows how many pairs are allowed. The order of the two names does not matter. Mistakes the build catches name the call:
+
+```scad error
+part("a") cube(3);
+part("b", at = [5, 0, 0]) cube(3);
+allow_overlap("a", "plate");
+```
+
+```text
+allow_overlap("a", "plate"): "plate" is not a part. Declare it with part(), or check the name.
+```
+
+```scad error
+part("a") cube(3);
+part("b", at = [5, 0, 0]) cube(3);
+allow_overlap("a");
+```
+
+```text
+allow_overlap(): give two part names in quotes, for example allow_overlap("shaft", "plate").
+```
+
+**What it does not do.**
+
+- It does not warn about parts that are close but clear.
+- An overlap shallower than 0.001 mm, or smaller than 0.01 mm³ on the exact solids, counts as touching.
+- It checks parts against each other, and not a part against itself.
+- The preview of a round surface lies up to a thousandth of its radius inside the true surface, so a very tight fit is judged on the exact solids and not on the preview.
+
+## 10. Exact and faceted
 
 The build output says whether each part is **exact** or **faceted**. It matters for the STEP file you export.
 
@@ -553,7 +618,7 @@ design.scad: 1 cylinder or circle is a 6-sided polygon in STEP, not true round (
 
 A circle with `$fn` inside a `linear_extrude` counts the same way. Set `$fn` only where you want flat sides.
 
-## 10. When something goes wrong
+## 11. When something goes wrong
 
 A build that fails shows a red message in the Build output, with the file and line beside it when they are known. Click the file and line to jump there. Here are the common ones.
 
@@ -712,7 +777,7 @@ This model has no solid volume. Check the dimensions and Boolean operations.
 
 **A file that Open refuses.** Open takes only `.scad`, `.step`, `.stp`, `.stl` and project zips. OpenSCAD code in a `.txt` file has to be renamed to end in `.scad`.
 
-## 11. Limits
+## 12. Limits
 
 | What | Limit |
 | --- | --- |
@@ -733,10 +798,10 @@ This model has no solid volume. Check the dimensions and Boolean operations.
 - `text()` (no fonts are bundled).
 - Libraries other than BOSL2.
 - Native CAD files and IGES files for import.
-- Mates solved from faces, and a check for parts that collide.
+- Mates solved from faces, and a warning for parts that come close without touching.
 - The joints themselves in the STEP file. STEP carries the parts in the pose shown, and not the joints.
 
-## 12. Cheat sheet
+## 13. Cheat sheet
 
 **Shapes.**
 
@@ -786,6 +851,14 @@ follow = "other", ratio = -2           a gear pair
 follow = "other", table = [[in, out], [in, out], ...]
                                        value = offset + ratio * table(other)
 ```
+
+**Collisions.**
+
+```text
+allow_overlap("a", "b");     // these two parts may overlap, by design
+```
+
+Parts that overlap turn red. **Check motion** (the magnifier on a joint) lists where in its travel they overlap, and **Stop at collision** holds a joint at the last clear pose.
 
 **Working order.** Write joints from the base outwards. A joint between parts that are already connected closes a loop. In a loop, the first joint with a `value` is held, and the others' values are starting guesses.
 
