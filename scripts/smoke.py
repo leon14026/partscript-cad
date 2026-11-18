@@ -316,6 +316,33 @@ with sync_playwright() as p:
             problems.append(f'{name}: a true cylinder should say nothing about $fn: {notice!r}')
         print(f'{name}: ok')
 
+    def check_manual():
+        # The header and the Help dialog both link to the manual page, which has its twelve sections and a way back.
+        name = 'manual'
+        link = page.locator('a[aria-label="Manual"]')
+        if link.count() != 1 or link.get_attribute('href') != 'manual.html' or link.get_attribute('target') != '_blank':
+            problems.append(f'{name}: the header should have one Manual link to manual.html that opens a new tab')
+            return
+        page.click('.help-button')
+        page.wait_for_selector('dialog.help-dialog[open]')
+        if page.locator('dialog.help-dialog a[href="manual.html"]').count() != 1:
+            problems.append(f'{name}: the Help dialog should link to the manual')
+        page.keyboard.press('Escape')
+        manual = context.new_page()
+        manual.on('console', lambda m: problems.append(f'console (manual): {m.text[:300]}') if m.type == 'error' else None)
+        manual.on('pageerror', lambda e: problems.append(f'page error (manual): {str(e)[:300]}'))
+        manual.goto(url.replace('index.html', 'manual.html'))
+        headings = manual.locator('main h2').all_inner_texts()
+        if len(headings) != 12 or not headings[0].startswith('1. Getting started') or not headings[-1].startswith('12. Cheat sheet'):
+            problems.append(f'{name}: the manual page should have twelve numbered sections: {headings}')
+        if manual.locator('nav.toc a').count() != 12 or manual.locator('a[href="./"]').count() != 1:
+            problems.append(f'{name}: the manual page should have a contents list of twelve links and a link back to the editor')
+        if manual.locator('pre').count() < 40:
+            problems.append(f'{name}: the manual page should show its code examples, found {manual.locator("pre").count()}')
+        manual.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}manual.png"))
+        manual.close()
+        print(f'{name}: ok')
+
     def check_bad_files():
         # Open says what is wrong with a file it cannot use. A web page is not a CAD file, and a web page renamed .step is not a STEP.
         name = 'bad files'
@@ -454,6 +481,7 @@ with sync_playwright() as p:
     check_import(names.index('Swivel arm assembly'))
     check_new_project()
     check_round_notes()
+    check_manual()
     check_bad_files()
     browser.close()
 

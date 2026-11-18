@@ -1,6 +1,6 @@
 # Partscript CAD: build plan
 
-Written 16 November 2026 for whoever continues this project, human or model. It covers seven phases, and Phases 8, 9 and 10 are proposals that follow them:
+Written 16 November 2026 for whoever continues this project, human or model. It covers seven phases. Phase 9 is done, and Phases 8 and 10 are proposals that follow them. The owner set the order on 17 November 2026: 9, then 8, then 10.
 
 1. Any OpenSCAD geometry builds (faceted fallback)
 2. Many parts from one file (inline parts)
@@ -10,7 +10,7 @@ Written 16 November 2026 for whoever continues this project, human or model. It 
 6. Import STEP and STL files, such as GrabCAD downloads
 7. Measure tool
 8. Phone viewer mode (proposed, not started)
-9. User manual: how to use the site and how the syntax works (proposed, not started)
+9. User manual: how to use the site and how the syntax works (done)
 10. Open an assembly STEP as separate parts (proposed, not started)
 
 Phases 1 and 2 come first, in that order. After them, phases 3 to 7 are independent and can be done in any order. Each phase ends in a working, tested, releasable site.
@@ -39,6 +39,7 @@ Phases 1 and 2 come first, in that order. After them, phases 3 to 7 are independ
   - Live since 17 November 2026 (commits `7f7d8ad` and `b9c50a3`). Before that push the browser smoke test built the 7 examples in the Examples menu and the 3 snippets it types in itself (a hull, two inline parts with a hinge, a BOSL2 gear) without a problem, in normal mode and in software mode. (It prints one Playwright traceback, `Dialog.accept: Cannot accept dialog which is already handled`, from a leftover `page.once('dialog')` listener in `scripts/smoke.py`. It is harmless: the exit code is 0 and no example is reported.)
 - **Fixes after the owner tested phases 6 and 7 (17 November 2026).** (1) Esc was ignored while a joint slider had keyboard focus, so Measure stayed on; only text and number fields hold Esc now. Esc also takes two presses by design (the first clears the picks, the second leaves Measure), and the Measure hint now says so. (2) **Open** accepts only `.scad`, `.json`, `.zip`, `.step`, `.stp` and `.stl`. Any other file, such as a web page, is refused with a message that names the file and says what to open. Before, it was opened as OpenSCAD and gave "Parser error: syntax error". (3) The asset panel no longer says "STEP, exact geometry" or offers Show and Copy for a file that could not be read. (4) The not-closed STL message reads once: `... (3 open edges), so STEP has flat faces. A mesh that is not closed has no exact volume, and STEP export may fail.` Tests: still 125 (an assertion was added to the open-mesh test). `scripts/smoke.py` gained a slider-focus Esc check and a "bad files" check.
 - **`$fn` report (17 November 2026, from the owner's backlog item).** A `cylinder` with `$fn` above zero and equal radii, and a `circle` with `$fn` in an extrusion, are flat-sided prisms in an exact part, so STEP holds a polygon where a hole was meant while the build said "exact". `flatRounds(nodes)` in `csg.ts` counts them with the same rule as `solid.ts` and `flat.ts`, `build.ts` stores the side counts on the exact part's `PartMesh.flatRounds`, and `flatRoundNotes` in `summary.ts` writes the text. The owner chose the levels: always report, as an **error from 16 sides** (`flatRoundErrorSides`), only a **log line below 16** (a hexagon is often meant). An error does not stop the build: the part still shows and exports, like an open loop, and the output turns red with the text `part.scad: 6 cylinders or circles are 48-sided polygons in STEP, not true round (set on line 3). Delete $fn for true cylinders and round holes.` The line comes from searching the part's own file for `$fn` (the CSG dump has no line numbers); a value from an include or a library names no line. A part that is faceted for another reason is not reported, since its faceted reason already is. Tests: `test/rounds.test.ts` (11). `scripts/smoke.py` gained a "round notes" check.
+- **Phase 9, the user manual, is done (17 November 2026).** `docs/MANUAL.md` has twelve sections and 40 code examples. `scripts/manual.ts` is a small Markdown renderer that knows only what the manual uses and throws on anything else, so a construct it cannot draw is found by a test and not by a reader. `npm run manual` runs it through `scripts/build-manual.ts` and writes `public/manual.html`, which is not committed: `predev` and `prebuild` run it, Vite copies it into `dist/`, and the Pages workflow gets it from `npm run build`. No dependency was added. The header has a **Manual** link and the Help dialog links to the page. `test/manual.test.ts` (44 tests) reads the manual: it builds every `scad` block; a `scad error` block must fail with exactly the message printed under it; a `scad says` block must give exactly the build output printed under it (the faceted sentence and the `$fn` report); the gear and cam block must equal the shipped example; the `part()` and `joint()` signatures and every argument and default in the tables are compared with the prelude in `assembly.ts`; and the Limits table is compared with the constants in the code. `scripts/smoke.py` gained a "manual" check (the header link, the Help link, and the page with twelve numbered sections). Writing it found two weak messages (the backlog has them). The test also caught the manual's own first draft listing `child_at` and `child_rot` before `axis`: the order in the code is `... at, rot, axis, limits, value, child_at, child_rot, follow, ...`, so the manual shows that order and tells the reader to write the argument names.
 - **Phase 7: done and live since 17 November 2026 (commit `df6cb0a`, with phase 6).** Differences from the text of the phase below, so later work reads true:
   - New files `src/engine/measure.ts` (`measure(kernel, parts, picks)`: reads an exact part from its placed sub-shapes and a faceted part from its mesh; types `MeasurePick`, `Reading` and `MeasureResult` live in `protocol.ts`) and `src/picking.ts` (page side: `pickAt`, `castRay`, a bounding volume hierarchy per part, `toScreen`, `viewRay`; pure, so Node tests drive it). `PartMesh` gained `faceOf` (face or region per triangle), `edgeOf` (edge per line segment, empty for a faceted part) and `corners` (x, y, z of each corner). `ModelBuilder.measure(model, pose, picks)` wraps the call in `checkpoint` / `releaseSince`; the worker answers a `measure` command and the client has `measure(revision, pose, picks)`. `App.measurePicks` refuses while a build or an export runs, and a stale preview can still be measured, because the worker keeps the last build.
   - **Expectations in the text below that turned out wrong (rule 10):** `faceGroups` are `[first index, number of indices, hash]` (three indices to a triangle), not `[triStart, triCount, faceHash]`. The plan sent faceted parts to the page; they are measured in the worker from the stored mesh, so one code path serves both kinds and the page only picks. A plane's `normal` ignores which way the face looks (the kernel's own note), so an upward face cannot be told from a downward one by it; angles are therefore reported between planes or axes, 0 to 90 degrees (`Angle`), and a test picks the top face by its height. The kernel has no closest-point call (`distanceBetween` returns a number), so there is no "line between the two closest points": the line is drawn where the distance reading has its own geometry (corner to corner; parallel faces, from the picked face's centre; parallel axes, centre to centre; axis to a parallel face; a corner to a face or an edge, only when its projection gives the kernel's shortest distance). Any other pair has the number and no line.
@@ -81,7 +82,7 @@ Phase 5 was the hardest phase.
 6. **Every new behaviour gets a test** in `test/`, with an expected number worked out by hand (a volume, a distance, an angle). The existing tests show the style.
 7. **Error messages say what to do next**, in plain words, and name the file and line when known. Throw `CadError(message, line?, file?)`.
 8. **Keep to the stack**: TypeScript, React, three.js, CodeMirror, `occt-wasm`, the bundled OpenSCAD WASM. Add a dependency only where this plan names one (`fflate` moves from dev to runtime in phases 4 and 6).
-9. **Update `README.md` and the Help dialog in `src/App.tsx`** when a phase changes what the user can do. Remove limits the phase lifts.
+9. **Update `README.md`, the Help dialog in `src/App.tsx` and `docs/MANUAL.md`** when a phase changes what the user can do, the syntax of `part()` or `joint()`, or a build message. Remove limits the phase lifts. Do it in the same commit. `test/manual.test.ts` builds every example in the manual and compares each printed message and each argument table with the code, so a manual that has fallen behind fails the tests.
 10. **When a fact here turns out wrong, stop and tell the owner** instead of working around it silently. Section 2 marks what was measured and what is design intent.
 
 ---
@@ -132,6 +133,7 @@ kinematics.ts settles loops -> Viewport.tsx -> viewer.ts (WebGL) or softwarePrev
 | `src/components/Viewport.tsx` | Preview pane, joint sliders, play button, loop status, a read-only row for each following joint, the Parts menu that hides parts in the preview, and the Measure tool (button, picks, result card, Esc). |
 | `src/App.tsx`, `project.ts`, `drafts.ts`, `src/components/AssetPanel.tsx` | Shell: file tabs (an imported file's tab shows `AssetPanel`), run, export, open/save (project zip with `fflate`), autosave to IndexedDB (assets in their own store). |
 | `src/examples.ts`, `assemblyExample.ts`, `linkageExample.ts`, `gearedExample.ts` | Example projects. |
+| `docs/MANUAL.md`, `scripts/manual.ts`, `scripts/build-manual.ts` | The user manual, the renderer that turns it into `public/manual.html` (generated, not committed), and the script that runs it. `test/manual.test.ts` checks the manual against the code. |
 | `test/*.test.ts` | Node tests that run both WASM engines. `geometry` (single parts), `faceted` (meshed parts), `labels` (face, edge and corner numbers), `measure` (readings), `picking` (rays and priorities), `import` (STEP and STL assets, project zip), `extrude` (exact extrusions and the check), `mesh` (pure functions), `assembly` (joints, inline parts, STEP round trip), `loops` (solver), `libraries` (BOSL2; `test/libraries.ts` reads the zip the way the worker fetches it). |
 
 ### The assembly language today
@@ -811,7 +813,7 @@ No engine change, so no new engine tests. The browser smoke test carries the che
 
 ---
 
-## Phase 9. User manual (proposed, not started)
+## Phase 9. User manual (done)
 
 Asked by the owner on 17 November 2026: add an instruction manual that says how to use the site and how the syntax works. It needs no engine change and can be done at any time. After it exists, a change to the syntax or to a build message updates the manual too (step 5).
 
@@ -858,10 +860,10 @@ A mechanical engineer who knows CAD and does not write code. Say what to change,
 
 ### Acceptance
 
-- [ ] Every section above exists and every `scad` example in the manual builds (`test/manual.test.ts`).
-- [ ] The argument tables for `part()` and `joint()` match `src/engine/assembly.ts` (the owner or a reviewer spot-checks three arguments against the code).
+- [x] Every section above exists and every `scad` example in the manual builds (`test/manual.test.ts`).
+- [x] The argument tables for `part()` and `joint()` match `src/engine/assembly.ts`. The test checks every argument name and default, so no spot-check is needed.
 - [ ] The owner can follow the manual from a blank project to a jointed assembly and then to an exported STEP without opening the README.
-- [ ] Tests pass and `scripts/smoke.py` passes in both modes.
+- [x] Tests pass and `scripts/smoke.py` passes in both modes.
 
 **Out of scope:** video, translations, and a documentation site with search.
 
@@ -886,7 +888,7 @@ Asked by the owner on 17 November 2026, after exporting his motor, face plate an
 - `part(name, file, component = "faceplate")` builds only that component. `part(name, file, body = 2)` builds only the second solid of the file (counted from 1) for files without useful names. With neither, the part is the whole file, as today.
 - A part keeps the position the file gives it. The `at` and `rot` of `part()` apply on top of that. So an exported assembly opens already assembled, and the pose it was exported in comes back as it was.
 - Colours come from the file unless `color` is given.
-- Joints stay in the code. The manual (Phase 9) should say: **export the assembly with every joint at its zero if you want to articulate it again**, because the exported pose is the new starting pose.
+- Joints stay in the code. The manual (section 7) should then say: **export the assembly with every joint at its zero if you want to articulate it again**, because the exported pose is the new starting pose.
 - Nested sub-assemblies are flattened: a component inside a component is named by its path with a slash, such as `arm/link`.
 - Errors name the file and line and say what to change, for example: `part("p", "part.step", component = "plate") has no component "plate" in part.step. It has: base, faceplate, original.step.`
 
@@ -933,6 +935,8 @@ Asked by the owner on 17 November 2026, after exporting his motor, face plate an
 | Collision check | Highlight parts that overlap in the current pose. |
 | IGES import | Not available in `occt-wasm` 5.17.2. |
 | Size readout in a tilted pose | The X, Y, Z chip in an assembly rotates each part's bounding box and merges them, so it over-reports when a joint is turned off-axis (86.64 mm against a true 78.72 mm in the owner's tilted motor). The 3D view, Measure and the STEP are right. The owner chose not to fix it on 17 November 2026. Fix: take the size from the mesh points. |
+| Missing semicolon message | A line that lacks its `;` gives OpenSCAD's own "module cube() does not support child modules", which says nothing about a semicolon. Say it in plain words, with the line before. Found while writing the manual, 17 November 2026. |
+| `text()` message | `text()` draws nothing because no fonts are bundled, and the build says "This model has no solid volume. Check the dimensions and Boolean operations." Say that `text()` is not available. Found while writing the manual, 17 November 2026. |
 | Open mesh volume | An STL that is not closed shows a volume in the asset panel as if it were exact. Mark it approximate there too. |
 
 ---

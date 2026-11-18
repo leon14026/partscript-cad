@@ -1,4 +1,4 @@
-import { Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, FileBox, FileCode2, FilePlus, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
+import { BookOpen, Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, FileBox, FileCode2, FilePlus, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { CodeEditor, type EditorControl } from './components/CodeEditor.tsx';
 import { AssetPanel } from './components/AssetPanel.tsx';
@@ -529,6 +529,9 @@ export function App() {
           <button className="button button-quiet file-action" type="button" title="Download every file, imported ones included, as one zip to share or reopen (Ctrl/Cmd+S)" aria-label="Save project" onClick={() => void saveProject()}>
             <FolderArchive size={17}/><span>Save project</span>
           </button>
+          <a className="button button-quiet file-action" href="manual.html" target="_blank" rel="noopener" title="Open the manual in a new tab: how to use the page, and how part() and joint() work" aria-label="Manual">
+            <BookOpen size={17}/><span>Manual</span>
+          </a>
           <span className="action-divider" />
           {stage ? (
             <button className="button button-run" type="button" onClick={() => engine.cancel()}><Square size={14}/><span>Cancel</span></button>
@@ -646,6 +649,7 @@ export function App() {
         </div>
         <div className="dialog-content">
           <p>Change a dimension in the source and press <strong>Run</strong> or <kbd>Ctrl / ⌘ + Enter</kbd>. Inspect the rebuilt model and choose <strong>Export STEP</strong> to download it.</p>
+          <p>The <a href="manual.html" target="_blank" rel="noopener">manual</a> covers the page, the OpenSCAD you need, every argument of <code>part()</code> and <code>joint()</code>, and what to do when a build fails. This dialog is the short version.</p>
           <dl>
             <dt>Shapes and operations</dt>
             <dd>Everything OpenSCAD can render builds. Boxes, cylinders and spheres combined with <code>translate()</code>, <code>rotate()</code>, <code>mirror()</code>, <code>scale()</code>, <code>union()</code>, <code>difference()</code> and <code>intersection()</code> export with true curves, and so does <code>linear_extrude()</code> of circles, squares, polygons and their unions, differences, <code>hull()</code> and <code>offset()</code>, so holes are round in STEP. Any other part, such as <code>hull()</code> of solids, <code>rotate_extrude()</code>, <code>minkowski()</code>, <code>polyhedron()</code> or a twisted extrusion, is <em>faceted</em>: it shows and exports as a solid with flat faces, and the build output says which parts and why. Set <code>$fn</code> only when you want flat sides: a cylinder or circle with <code>$fn</code> is a polygon in STEP, so its hole is not round, and the build output names the file and line. Leave <code>$fn</code> out for true cylinders.</dd>

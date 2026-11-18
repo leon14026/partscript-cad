@@ -5,8 +5,11 @@
   "type": "module",
   "license": "GPL-3.0-or-later",
   "scripts": {
+    "manual": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/build-manual.ts",
+    "predev": "npm run manual",
     "dev": "vite --host 0.0.0.0",
     "check": "tsc --noEmit",
+    "prebuild": "npm run manual",
     "build": "vite build && node scripts/package-source.mjs",
     "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test test/*.test.ts",
     "libraries": "node scripts/fetch-libraries.mjs"
