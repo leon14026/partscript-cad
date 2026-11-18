@@ -55,20 +55,23 @@ function placement(input: unknown, factor = 1) {
     u[2] * factor, v[2] * factor, normal[2] * handedness * factor, z[3]];
 }
 
+/** The drawn segments of every edge, and the number of the edge each segment belongs to. */
 function edgeSegments({ points, edgeGroups }: EdgeData) {
   let segments = 0;
   for (let i = 1; i < edgeGroups.length; i += 3) segments += Math.max(0, edgeGroups[i] / 3 - 1);
   const lines = new Float32Array(segments * 6);
+  const edgeOf = new Uint32Array(segments);
   let offset = 0;
   for (let i = 0; i < edgeGroups.length; i += 3) {
     const first = edgeGroups[i];
     const end = first + edgeGroups[i + 1];
     for (let j = first; j + 3 < end; j += 3) {
       lines.set(points.subarray(j, j + 6), offset);
+      edgeOf[offset / 6] = i / 3;
       offset += 6;
     }
   }
-  return lines;
+  return { lines, edgeOf };
 }
 
 export function buildSolid(kernel: OcctKernel, csg: string | CsgNode[]) {
@@ -174,7 +177,22 @@ export function buildSolid(kernel: OcctKernel, csg: string | CsgNode[]) {
   return { shape, volume };
 }
 
-export function previewSolid(kernel: OcctKernel, shape: ShapeHandle): Omit<PartMesh, 'volume' | 'quality' | 'reason'> {
+/**
+ * How finely an imported solid is meshed, from how many faces it has. OpenCascade meshes about 9,000 triangles a
+ * second in the browser, and its angular tolerance sets how many triangles a round face gets, so a part with
+ * thousands of faces is meshed more coarsely to stay well inside the 60 second job. A part made here has a few
+ * hundred faces at most and is always meshed finely. Measured: a plate with 1,800 faces and 1,200 holes took 38 s
+ * at 0.18 radians (338,000 triangles), 8.5 s at 0.5 (127,000) and 3.6 s at 0.8 (79,000).
+ * (A second pass at a coarser setting does nothing: OpenCascade keeps the first mesh of a shape.)
+ */
+export function importedMeshing(faces: number) {
+  if (faces <= 400) return { angular: 0.18, factor: 1 };
+  if (faces <= 1_000) return { angular: 0.3, factor: 2 };
+  if (faces <= 4_000) return { angular: 0.5, factor: 3 };
+  return { angular: 0.8, factor: 4 };
+}
+
+export function previewSolid(kernel: OcctKernel, shape: ShapeHandle, imported = false): Omit<PartMesh, 'volume' | 'quality' | 'reason'> {
   const { xmin, ymin, zmin, xmax, ymax, zmax } = kernel.getBoundingBox(shape);
   const min: Vec3 = [xmin, ymin, zmin];
   const max: Vec3 = [xmax, ymax, zmax];
@@ -182,17 +200,38 @@ export function previewSolid(kernel: OcctKernel, shape: ShapeHandle): Omit<PartM
     throw new CadError('The model exceeds the supported coordinate range.');
   }
   const span = Math.max(xmax - xmin, ymax - ymin, zmax - zmin);
-  const deflection = Math.max(span / 1_200, 0.00001);
-  const mesh = kernel.tessellate(shape, { linearDeflection: deflection, angularDeflection: 0.18 });
+  const { angular, factor } = imported ? importedMeshing(kernel.subShapeCount(shape, 'face')) : { angular: 0.18, factor: 1 };
+  const deflection = Math.max(span / 1_200, 0.00001) * factor;
+  // meshShape also reports which triangles belong to which face. The faces come in the order of
+  // getSubShapes(shape, 'face'), which the measure command relies on (test/measure.test.ts checks it).
+  const mesh = kernel.meshShape(shape, { linearDeflection: deflection, angularDeflection: angular });
   if (!mesh.triangleCount || mesh.triangleCount > maxTriangles) {
-    throw new CadError('The solid is too complex to preview. Reduce the number of features.');
+    throw new CadError(mesh.triangleCount
+      ? `The solid is too complex to preview: ${mesh.triangleCount.toLocaleString('en-US')} triangles, and the limit is ${maxTriangles.toLocaleString('en-US')}. Reduce the number of features, or export a simpler version of an imported file.`
+      : 'The solid is too complex to preview. Reduce the number of features.');
   }
+  const faceOf = new Uint32Array(mesh.triangleCount);
+  const groups = mesh.faceGroups ?? new Int32Array(0);
+  // A group is [first index, number of indices, hash]: three indices to a triangle.
+  for (let i = 0; i < groups.length; i += 3) faceOf.fill(i / 3, groups[i] / 3, (groups[i] + groups[i + 1]) / 3);
   const edgeData = kernel.wireframe(shape, { source: 'triangulation', deflection });
+  const { lines, edgeOf } = edgeSegments(edgeData);
+  const mark = kernel.checkpoint();
+  const vertices = kernel.getSubShapes(shape, 'vertex');
+  const corners = new Float64Array(vertices.length * 3);
+  vertices.forEach((vertex, i) => {
+    const { x, y, z } = kernel.vertexPosition(vertex);
+    corners.set([x, y, z], i * 3);
+  });
+  kernel.releaseSince(mark);
   return {
     positions: new Float32Array(mesh.positions),
     normals: new Float32Array(mesh.normals),
     indices: new Uint32Array(mesh.indices),
-    edgeSegments: edgeSegments(edgeData),
+    edgeSegments: lines,
+    faceOf,
+    edgeOf,
+    corners,
     bounds: { min, max },
   };
 }

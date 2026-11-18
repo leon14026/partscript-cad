@@ -1,9 +1,11 @@
 import type { OcctKernel, ShapeHandle } from 'occt-wasm';
 import { partTag, readAssembly, singlePart, solvePose, type AssemblySpec, type Color } from './assembly.ts';
+import { assetFormat, contentHash, stemOf } from './assets.ts';
 import { childrenText, firstColor, hasShapes, needsCheck, parseCsg, taggedParts, unsupported, type CsgNode } from './csg.ts';
-import { maxTriangles, meshBounds, meshVolume, parseBinaryStl, toPartMesh } from './mesh.ts';
-import { CadError, type BuildStage, type ModelPreview, type PartMesh, type Pose, type ProjectFiles } from './protocol.ts';
-import { checkProject, evaluateScad, renderMesh, type Evaluation, type LibraryFiles, type LibraryLoader, type OpenScadFactory } from './scad.ts';
+import { flipTriangles, maxTriangles, meshBounds, meshVolume, parseBinaryStl, parseStl, toBinaryStl, toPartMesh } from './mesh.ts';
+import { CadError, type BuildStage, type MeasurePick, type ModelPreview, type PartMesh, type Pose, type ProjectAssets, type ProjectFiles } from './protocol.ts';
+import { measure } from './measure.ts';
+import { evaluateScad, inspectProject, renderMesh, type Evaluation, type LibraryFiles, type LibraryLoader, type OpenScadFactory } from './scad.ts';
 import { buildSolid, meshToSolid, previewSolid, writeAssemblyStep } from './solid.ts';
 
 /** Why a part is faceted when its exact build disagreed with OpenSCAD. It reads after "uses". */
@@ -90,21 +92,39 @@ export class ModelBuilder {
     return mounted;
   }
 
-  /** The exact solid of a tree that unsupported() accepted. */
-  #exact(nodes: CsgNode[]): Extract<CachedSolid, { kind: 'exact' }> {
+  /**
+   * Store a solid the way the cache keeps one: serialised and read back, so that what is kept holds nothing from
+   * the construction, and meshed from the stored shape, so the faces, edges and corners the mesh numbers are
+   * the ones the measure command finds in it.
+   */
+  #keep(make: () => { shape: ShapeHandle; volume: number }, imported = false): Extract<CachedSolid, { kind: 'exact' }> {
     const kernel = this.#kernel;
     const mark = kernel.checkpoint();
     let brep: Uint8Array;
-    let mesh: PartMesh;
+    let volume: number;
     try {
-      const { shape, volume } = this.#buildExact(kernel, nodes);
-      mesh = { ...previewSolid(kernel, shape), volume, quality: 'exact' };
-      brep = kernel.toBREPBinary(shape);
+      const built = make();
+      volume = built.volume;
+      brep = kernel.toBREPBinary(built.shape);
     } finally {
       // Boolean operations leave many intermediate shapes. Keep only the result.
       kernel.releaseSince(mark);
     }
-    return { kind: 'exact', shape: kernel.fromBREPBinary(brep), mesh };
+    const shape = kernel.fromBREPBinary(brep);
+    const inner = kernel.checkpoint();
+    try {
+      return { kind: 'exact', shape, mesh: { ...previewSolid(kernel, shape, imported), volume, quality: 'exact' } };
+    } catch (error) {
+      kernel.release(shape);
+      throw error;
+    } finally {
+      kernel.releaseSince(inner);
+    }
+  }
+
+  /** The exact solid of a tree that unsupported() accepted. */
+  #exact(nodes: CsgNode[]) {
+    return this.#keep(() => this.#buildExact(this.#kernel, nodes));
   }
 
   /**
@@ -134,8 +154,22 @@ export class ModelBuilder {
   }
 
   /** Build the solid for one part's shapes. `context` names an inline part in error messages. */
-  async #solid(csg: string, file: string, context?: string): Promise<{ solid: CachedSolid; fresh: boolean }> {
-    const cached = this.#cache.get(csg);
+  async #solid(csg: string, file: string, context?: string, assets: ProjectAssets = {}): Promise<{ solid: CachedSolid; fresh: boolean }> {
+    // An import() names its STL, and the dump adds the file's modification time. Key the part by the file's content instead, so
+    // an unchanged part is not rebuilt and a replaced file is.
+    const meshes: ProjectAssets = {};
+    let key = csg;
+    for (const match of csg.matchAll(/\bimport\(file = "\/([^"]+)"/g)) {
+      const bytes = assets[match[1]];
+      if (!bytes) throw new CadError(`${match[1]} is not in this project.`, undefined, file);
+      meshes[match[1]] = bytes;
+    }
+    const imported = Object.keys(meshes);
+    if (imported.length) {
+      key = csg.replace(/, timestamp = \d+/g, '');
+      for (const name of imported) key += `\n// ${name} ${await contentHash(meshes[name])}`;
+    }
+    const cached = this.#cache.get(key);
     if (cached) return { solid: cached, fresh: false };
 
     try {
@@ -160,7 +194,8 @@ export class ModelBuilder {
         }
       }
       if (!solid) {
-        const stl = await renderMesh(csg, this.#createOpenScad);
+        if (reason === 'import') reason = 'an imported STL mesh';
+        const stl = await renderMesh(csg, this.#createOpenScad, meshes);
         let soup;
         try {
           soup = parseBinaryStl(stl);
@@ -176,7 +211,7 @@ export class ModelBuilder {
         solid = { kind: 'faceted', stl, mesh: { ...shown, volume, quality: 'faceted', reason } };
       }
       solid.color = firstColor(nodes);
-      this.#cache.set(csg, solid);
+      this.#cache.set(key, solid);
       return { solid, fresh: true };
     } catch (error) {
       if (!(error instanceof CadError) || error.file) throw error;
@@ -184,12 +219,86 @@ export class ModelBuilder {
     }
   }
 
-  async build(files: ProjectFiles, entry: string, progress: (stage: BuildStage) => void = () => {}): Promise<BuiltModel> {
+  /** The solid of an imported STEP or STL, built once for each distinct content. */
+  async #asset(name: string, bytes: Uint8Array): Promise<{ solid: CachedSolid; fresh: boolean }> {
+    const format = assetFormat(name);
+    const key = `${format}:${await contentHash(bytes)}`;
+    const cached = this.#cache.get(key);
+    if (cached) return { solid: cached, fresh: false };
+    const solid = format === 'step' ? this.#importStep(name, bytes) : this.#importStl(name, bytes);
+    this.#cache.set(key, solid);
+    return { solid, fresh: true };
+  }
+
+  /** A STEP file as an exact part: its solid bodies, joined as one compound. OpenCascade converts the file's units to millimetres. */
+  #importStep(name: string, bytes: Uint8Array): CachedSolid {
+    const kernel = this.#kernel;
+    const text = new TextDecoder().decode(bytes);
+    if (!/^\s*ISO-10303-21\s*;/.test(text.slice(0, 4096))) {
+      throw new CadError(`${name} is not a STEP file: it does not start with ISO-10303-21. It may be another format that was renamed. Export it from the CAD program as STEP (AP203, AP214 or AP242).`, undefined, name);
+    }
+    try {
+      let bodies = 0;
+      const kept = this.#keep(() => {
+        let imported: ShapeHandle;
+        try {
+          imported = kernel.importStep(text);
+        } catch {
+          throw new CadError(`${name} could not be read as a STEP file. It may be damaged or cut short. Export it again from the CAD program as STEP (AP203, AP214 or AP242).`, undefined, name);
+        }
+        const solids = kernel.getSubShapes(imported, 'solid');
+        if (!solids.length) throw new CadError(`${name} has no solid bodies. It may contain only surfaces or curves. Export it again as a solid model.`, undefined, name);
+        const shape = solids.length === 1 ? solids[0] : kernel.makeCompound(solids);
+        const volume = kernel.getVolume(shape);
+        if (!Number.isFinite(volume) || volume <= 0) throw new CadError(`${name} has no positive solid volume.`, undefined, name);
+        bodies = solids.length;
+        return { shape, volume };
+      }, true);
+      kept.mesh.bodies = bodies;
+      return kept;
+    } catch (error) {
+      throw error instanceof CadError && !error.file ? new CadError(error.message, error.line, name) : error;
+    }
+  }
+
+  /** An STL as a faceted part. A mesh whose triangles face inward is turned around. */
+  #importStl(name: string, bytes: Uint8Array): CachedSolid {
+    let soup;
+    try {
+      soup = parseStl(bytes);
+    } catch (error) {
+      throw new CadError(`${name} could not be read. ${error instanceof Error ? error.message : ''}`.trim(), undefined, name);
+    }
+    let volume = meshVolume(soup);
+    if (volume < 0) {
+      soup = flipTriangles(soup);
+      volume = -volume;
+    }
+    if (!Number.isFinite(volume) || volume < 1e-6) {
+      throw new CadError(`${name} does not enclose a volume. An STL has to be a closed solid: with no holes in its surface, and all triangles facing outward.`, undefined, name);
+    }
+    const stats = { openEdges: 0 };
+    const shown = toPartMesh(soup, undefined, stats);
+    const triangles = shown.indices.length / 3;
+    if (!triangles || triangles > maxTriangles) {
+      throw new CadError(`${name} has ${triangles.toLocaleString('en-US')} triangles, and a part can have up to ${maxTriangles.toLocaleString('en-US')} to be previewed. Export a coarser mesh.`, undefined, name);
+    }
+    // STEP is made from a binary STL, so keep one whatever the file was.
+    // A mesh with open edges still shows and measures, but its volume is not a volume and STEP export will say it cannot sew it.
+    const reason = stats.openEdges ? `an imported STL mesh that is not closed (${stats.openEdges.toLocaleString('en-US')} open edges), so its volume is not exact and STEP export may fail` : 'an imported STL mesh';
+    return { kind: 'faceted', stl: toBinaryStl(soup), mesh: { ...shown, volume, quality: 'faceted', reason } };
+  }
+
+  async build(files: ProjectFiles, entry: string, progress: (stage: BuildStage) => void = () => {}, assets: ProjectAssets = {}): Promise<BuiltModel> {
     const started = performance.now();
-    const mounted = await this.#libraries(checkProject(files, entry), progress);
+    const needs = inspectProject(files, entry, assets);
+    const mounted = await this.#libraries(needs.libraries, progress);
+    // The STL files that import() reads are written next to the project files when OpenSCAD runs.
+    const importedMeshes: ProjectAssets = Object.fromEntries(needs.meshes.map((name) => [name, assets[name]]));
     progress('evaluate');
-    const main = await evaluateScad(files, entry, this.#createOpenScad, mounted);
-    const isAssembly = main.records.length > 0;
+    // An asset can be built on its own, to look at it and measure it.
+    const main = Object.hasOwn(assets, entry) ? undefined : await evaluateScad(files, entry, this.#createOpenScad, mounted, importedMeshes);
+    const isAssembly = main !== undefined && main.records.length > 0;
     let assembly: AssemblySpec;
     let inline = new Map<number, CsgNode>();
     if (isAssembly) {
@@ -197,7 +306,7 @@ export class ModelBuilder {
         assembly = readAssembly(main.records);
         for (const part of assembly.parts) {
           if (part.file === undefined) continue;
-          if (!Object.hasOwn(files, part.file)) throw new CadError(`part("${part.name}"): ${part.file} is not in this project.`);
+          if (!Object.hasOwn(files, part.file) && !Object.hasOwn(assets, part.file)) throw new CadError(`part("${part.name}"): ${part.file} is not in this project.`);
           if (part.file === entry) throw new CadError(`part("${part.name}"): an assembly cannot use itself as a part.`);
         }
         const nodes = parseCsg(main.csg);
@@ -212,11 +321,11 @@ export class ModelBuilder {
       assembly = singlePart(entry);
     }
 
-    const evaluations = new Map<string, Evaluation>([[entry, main]]);
-    const messages = [...main.messages];
+    const evaluations = new Map<string, Evaluation>(main ? [[entry, main]] : []);
+    const messages = main ? [...main.messages] : [];
     for (const { file } of assembly.parts) {
-      if (file === undefined || evaluations.has(file)) continue;
-      const evaluation = await evaluateScad(files, file, this.#createOpenScad, mounted);
+      if (file === undefined || evaluations.has(file) || Object.hasOwn(assets, file)) continue;
+      const evaluation = await evaluateScad(files, file, this.#createOpenScad, mounted, importedMeshes);
       if (evaluation.records.length) {
         throw new CadError(`${file} declares parts of its own. An assembly inside an assembly is unavailable in this version.`, undefined, file);
       }
@@ -234,8 +343,10 @@ export class ModelBuilder {
     for (const [i, part] of assembly.parts.entries()) {
       const node = inline.get(i);
       const { solid, fresh } = node
-        ? await this.#solid(childrenText(main.csg, node), entry, `part("${part.name}")`)
-        : await this.#solid(evaluations.get(part.file!)!.csg, part.file!);
+        ? await this.#solid(childrenText(main!.csg, node), entry, `part("${part.name}")`, assets)
+        : part.file !== undefined && Object.hasOwn(assets, part.file)
+          ? await this.#asset(part.file, assets[part.file])
+          : await this.#solid(evaluations.get(part.file!)!.csg, part.file!, undefined, assets);
       if (fresh) rebuilt++;
       if (!part.colorGiven && solid.color) part.color = solid.color;
       used.add(solid);
@@ -256,7 +367,7 @@ export class ModelBuilder {
     }
 
     return {
-      name: entry.replace(/\.scad$/i, ''),
+      name: stemOf(entry),
       assembly,
       entries,
       preview: { assembly, isAssembly, meshes, partMesh, messages, rebuilt, buildMs: performance.now() - started },
@@ -268,6 +379,23 @@ export class ModelBuilder {
     if (entry.kind === 'exact') return entry.shape;
     entry.shape ??= meshToSolid(this.#kernel, entry.stl, entry.mesh.volume, label);
     return entry.shape;
+  }
+
+  /** Read one or two picks of a built model in a pose. Holds no handles afterwards. */
+  measure(model: BuiltModel, pose: Pose, picks: MeasurePick[]) {
+    const matrices = solvePose(model.assembly, pose);
+    const parts = model.entries.map((entry, i) => ({
+      name: model.assembly.parts[i].name,
+      matrix: matrices[i],
+      mesh: entry.mesh,
+      shape: entry.kind === 'exact' ? entry.shape : undefined,
+    }));
+    const mark = this.#kernel.checkpoint();
+    try {
+      return measure(this.#kernel, parts, picks);
+    } finally {
+      this.#kernel.releaseSince(mark);
+    }
   }
 
   exportStep(model: BuiltModel, pose: Pose = {}) {

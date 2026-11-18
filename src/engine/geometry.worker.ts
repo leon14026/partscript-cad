@@ -4,11 +4,13 @@ import occtBinary from 'occt-wasm/dist/occt-wasm.wasm?url';
 import { unzipSync } from 'fflate';
 import { ModelBuilder, type BuiltModel } from './build.ts';
 import { libraries, type LibraryFiles, type OpenScadFactory } from './scad.ts';
-import { CadError, type GeometryCommand, type GeometryReply } from './protocol.ts';
+import { CadError, type GeometryCommand, type GeometryReply, type ProjectAssets } from './protocol.ts';
 
 const scope = self as DedicatedWorkerGlobalScope;
 let builderPromise: Promise<ModelBuilder> | undefined;
 let model: { revision: number; built: BuiltModel } | undefined;
+/** The project's imported files. The page sends each once, and a build names the ones it uses. */
+const assets: ProjectAssets = {};
 
 function post(reply: GeometryReply) {
   scope.postMessage(reply);
@@ -85,10 +87,22 @@ scope.onmessage = async ({ data }: MessageEvent<GeometryCommand>) => {
       return;
     }
 
+    if (data.kind === 'measure') {
+      if (!model || model.revision !== revision || !builderPromise) {
+        throw new CadError('Run the current code before measuring.');
+      }
+      post({ kind: 'measure', id, result: (await builderPromise).measure(model.built, data.pose, data.picks) });
+      return;
+    }
+
     model = undefined;
+    for (const name of Object.keys(assets)) if (!data.assetNames.includes(name)) delete assets[name];
+    Object.assign(assets, data.newAssets);
+    const missing = data.assetNames.find((name) => !Object.hasOwn(assets, name));
+    if (missing) throw new CadError(`${missing} did not reach the geometry engine. Run the model again.`, undefined, missing);
     post({ kind: 'progress', id, stage: 'load' });
     const builder = await loadBuilder();
-    const built = await builder.build(data.files, data.entry, (stage) => post({ kind: 'progress', id, stage }));
+    const built = await builder.build(data.files, data.entry, (stage) => post({ kind: 'progress', id, stage }), assets);
     model = { revision, built };
     // The meshes stay in the builder's cache, so they are copied to the page instead of transferred.
     post({ kind: 'preview', id, model: built.preview });

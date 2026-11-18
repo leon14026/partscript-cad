@@ -1,15 +1,17 @@
-import { Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, FileCode2, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
+import { Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, FileBox, FileCode2, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { CodeEditor, type EditorControl } from './components/CodeEditor.tsx';
+import { AssetPanel } from './components/AssetPanel.tsx';
 import { Viewport } from './components/Viewport.tsx';
 import { clampJoint, defaultPose, fileNamePattern, structureOf, type AssemblySpec } from './engine/assembly.ts';
+import { stemOf, unreadableFormat, formatBytes } from './engine/assets.ts';
 import { BrowserGeometryEngine } from './engine/client.ts';
 import { loopStates, openingPose, settlePose } from './engine/kinematics.ts';
 import { facetedText } from './engine/summary.ts';
-import { CadError, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type BuildStage, type Diagnostic, type ModelPreview, type Pose } from './engine/protocol.ts';
+import { CadError, MAX_ASSET_BYTES, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type BuildStage, type Diagnostic, type MeasurePick, type ModelPreview, type Pose } from './engine/protocol.ts';
 import { loadDraft, saveDraft } from './drafts.ts';
 import { exampleProjects } from './examples.ts';
-import { readProject, scadFilename, serializeProject, toFiles, uniqueName, type Project, type ProjectFile } from './project.ts';
+import { assetFilename, isAsset, isAssetName, projectProblem, readProject, readProjectZipAsync, scadFilename, serializeProjectZipAsync, toAssets, toFiles, uniqueName, type Project, type ProjectFile } from './project.ts';
 
 interface DocumentState extends Project {
   revision: number;
@@ -87,7 +89,10 @@ function openLoopText(assembly: AssemblySpec, pose: Pose) {
 }
 
 function sameFiles(a: ProjectFile[], b: ProjectFile[]) {
-  return a.length === b.length && a.every((file, i) => file.name === b[i].name && file.source === b[i].source);
+  // An imported file is the same file while it is the same array of bytes.
+  return a.length === b.length && a.every((file, i) => file.name === b[i].name && (isAsset(file) || isAsset(b[i])
+    ? isAsset(file) && isAsset(b[i]) && file.data === b[i].data
+    : file.source === (b[i] as { source: string }).source));
 }
 
 export function App() {
@@ -137,7 +142,7 @@ export function App() {
     setStage('load');
     const entry = snapshot.entry ?? snapshot.active;
     try {
-      const result = await engine.build(toFiles(snapshot), entry, snapshot.revision, setStage);
+      const result = await engine.build(toFiles(snapshot), toAssets(snapshot), entry, snapshot.revision, setStage);
       const opening = carryPose(result.assembly, shownAssembly.current, shownPose.current);
       const openLoop = opening.closed ? undefined : openLoopText(result.assembly, opening.pose);
       updatePose(opening.pose);
@@ -163,6 +168,18 @@ export function App() {
     } finally {
       busy.current = false;
       setStage(null);
+    }
+  }
+
+  /** Read picks of the model on screen. The worker keeps the last build, so a stale preview can still be measured. */
+  async function measurePicks(picks: MeasurePick[], at: Pose) {
+    if (builtRevision === null) throw new CadError('Run the code, then measure the model it builds.');
+    if (busy.current) throw new CadError('The engine is busy with a build or an export. Pick again when it has finished.');
+    busy.current = true;
+    try {
+      return await engine.measure(builtRevision, at, picks);
+    } finally {
+      busy.current = false;
     }
   }
 
@@ -195,17 +212,24 @@ export function App() {
     const current = latest.current;
     const file = current.files.find((item) => item.name === current.active);
     if (!file) return;
-    download(file.source, file.name, 'text/plain;charset=utf-8');
+    if (isAsset(file)) download(file.data as Uint8Array<ArrayBuffer>, file.name, 'application/octet-stream');
+    else download(file.source, file.name, 'text/plain;charset=utf-8');
     if (current.files.length === 1) savedFiles.current = current.files;
     if (!busy.current) setNotice({ kind: 'success', text: `Saved ${file.name}.` });
   }
 
-  function saveProject() {
+  async function saveProject() {
     const current = latest.current;
-    const name = `${(current.entry ?? current.active).replace(/\.scad$/i, '')}.partscript.json`;
-    download(serializeProject(current), name, 'application/json');
-    savedFiles.current = current.files;
-    if (!busy.current) setNotice({ kind: 'success', text: `Saved ${name} with ${count(current.files.length, 'file')}.` });
+    const name = `${stemOf(current.entry ?? current.active)}.partscript.zip`;
+    try {
+      const bytes = await serializeProjectZipAsync(current);
+      download(bytes as Uint8Array<ArrayBuffer>, name, 'application/zip');
+      savedFiles.current = current.files;
+      if (!busy.current) setNotice({ kind: 'success', text: `Saved ${name} with ${count(current.files.length, 'file')}.` });
+    } catch (error) {
+      setNotice({ kind: 'error', text: error instanceof CadError ? error.message : 'The project could not be saved.' });
+      setOutputOpen(true);
+    }
   }
 
   function unsaved() {
@@ -247,8 +271,12 @@ export function App() {
   function askName(message: string, suggestion: string, except?: string) {
     const typed = window.prompt(message, suggestion);
     if (typed === null || !typed.trim()) return undefined;
-    const name = scadFilename(typed);
-    if (!fileNamePattern.test(name)) {
+    // An imported file keeps its kind: a name typed without an extension keeps the old one.
+    const wasAsset = isAssetName(suggestion);
+    const name = wasAsset
+      ? assetFilename(isAssetName(typed) ? typed : `${typed.trim()}${/\.[A-Za-z]+$/.exec(suggestion)?.[0] ?? '.step'}`)
+      : scadFilename(typed);
+    if (!(wasAsset ? /\.(?:step|stp|stl)$/ : fileNamePattern).test(name)) {
       setNotice({ kind: 'error', text: 'Use letters, digits, _ . and - in a file name.' });
       return undefined;
     }
@@ -277,7 +305,7 @@ export function App() {
     if (busy.current) return;
     const name = askName(`Rename ${old}`, old, old);
     if (!name || name === old) return;
-    const used = before.files.some((file) => file.name !== old && file.source.includes(old));
+    const used = before.files.some((file) => file.name !== old && !isAsset(file) && file.source.includes(old));
     editProject({
       files: before.files.map((file) => (file.name === old ? { ...file, name } : file)),
       active: before.active === old ? name : before.active,
@@ -308,11 +336,24 @@ export function App() {
   async function openFiles(list: File[]) {
     try {
       if (busy.current) return;
-      const texts: ProjectFile[] = [];
+      const added: ProjectFile[] = [];
       for (const file of list) {
+        const unreadable = unreadableFormat(file.name);
+        if (unreadable) throw new CadError(unreadable);
+        if (/\.zip$/i.test(file.name)) {
+          replaceDocument(await readProjectZipAsync(new Uint8Array(await file.arrayBuffer())));
+          return;
+        }
+        if (isAssetName(file.name)) {
+          if (file.size > MAX_ASSET_BYTES) {
+            throw new CadError(`${file.name} is ${formatBytes(file.size)}. One imported file can be up to ${formatBytes(MAX_ASSET_BYTES)}. Export a simpler version, or leave out small parts such as screws and threads.`);
+          }
+          added.push({ name: assetFilename(file.name), data: new Uint8Array(await file.arrayBuffer()) });
+          continue;
+        }
         if (file.size > MAX_SOURCE_BYTES * 8) throw new CadError(`${file.name} is too large to open.`);
         const source = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
-        if (source.includes('\0')) throw new CadError(`${file.name} is not plain text.`);
+        if (source.includes('\0')) throw new CadError(`${file.name} is not plain text. Open .scad files, .step, .stp or .stl files, or a project zip.`);
         if (/\.json$/i.test(file.name)) {
           let project: Project | undefined;
           try {
@@ -325,30 +366,45 @@ export function App() {
           return;
         }
         if (file.size > MAX_SOURCE_BYTES) throw new CadError(`${file.name} is larger than 256 KiB.`);
-        texts.push({ name: scadFilename(file.name), source });
+        added.push({ name: scadFilename(file.name), source });
       }
-      if (!texts.length) return;
+      if (!added.length) return;
       const before = latest.current;
-      // One file opens on its own, as before. Several files join the current project.
-      if (texts.length === 1 && before.files.length === 1) {
-        replaceDocument({ files: texts, active: texts[0].name, entry: null });
+      // One .scad file opens on its own, as before. Anything else joins the current project.
+      if (added.length === 1 && !isAsset(added[0]) && before.files.length === 1) {
+        replaceDocument({ files: added, active: added[0].name, entry: null });
         return;
       }
-      const replaced = texts.filter((file) => before.files.some((item) => item.name === file.name));
+      const taken = added.map((file) => file.name);
+      added.forEach((file, i) => {
+        // Two files that end up with one name keep both.
+        if (taken.indexOf(file.name) !== i) file.name = uniqueName(file.name, [...taken, ...before.files.map((item) => item.name)]);
+      });
+      const replaced = added.filter((file) => before.files.some((item) => item.name === file.name));
       if (replaced.length && !window.confirm(`Replace ${replaced.map((file) => file.name).join(', ')} in this project?`)) return;
-      const files = [...before.files.filter((file) => !texts.some((item) => item.name === file.name)), ...texts];
-      if (files.length > MAX_PROJECT_FILES) throw new CadError(`A project can hold ${MAX_PROJECT_FILES} files.`);
-      editProject({ files, active: texts[0].name }, `Added ${count(texts.length, 'file')} to the project.`);
+      const files = [...before.files.filter((file) => !added.some((item) => item.name === file.name)), ...added];
+      const problem = projectProblem(files);
+      if (problem) throw new CadError(problem);
+      const imported = added.filter(isAsset);
+      editProject({ files, active: added[0].name }, imported.length
+        ? `Added ${imported.map((file) => `${file.name} (${formatBytes(file.data.byteLength)})`).join(', ')}. Press Show on its own to look at it, or use it as a part.`
+        : `Added ${count(added.length, 'file')} to the project.`);
     } catch (error) {
       setNotice({ kind: 'error', text: error instanceof CadError ? error.message : 'Could not open this file as UTF-8 text.' });
       setOutputOpen(true);
     }
   }
 
+  /** Build an imported file by itself, whichever file Run is set to build. */
+  function showOnItsOwn(name: string) {
+    if (busy.current) return;
+    void run({ ...latest.current, entry: name });
+  }
+
   function editSource(source: string) {
     const before = latest.current;
     const file = before.files.find((item) => item.name === before.active);
-    if (!file || source === file.source) return;
+    if (!file || isAsset(file) || source === file.source) return;
     updateDocument({
       ...before, revision: before.revision + 1,
       files: before.files.map((item) => (item === file ? { ...item, source } : item)),
@@ -410,7 +466,7 @@ export function App() {
         void run();
       } else if (event.key.toLowerCase() === 's') {
         event.preventDefault();
-        if (latest.current.files.length > 1) saveProject();
+        if (latest.current.files.length > 1) void saveProject();
         else saveScad();
       }
     };
@@ -437,18 +493,18 @@ export function App() {
           <div><h1>Partscript<span> CAD</span></h1><span className="brand-subtitle">Parametric workbench</span></div>
         </div>
         <div className="app-actions">
-          <button className="button button-quiet file-action" type="button" title="Open SCAD files or a saved project" aria-label="Open" disabled={!!stage} onClick={() => fileInput.current?.click()}>
+          <button className="button button-quiet file-action" type="button" title="Open SCAD files, STEP or STL files to import, or a saved project (.zip)" aria-label="Open" disabled={!!stage} onClick={() => fileInput.current?.click()}>
             <FolderOpen size={17}/><span>Open</span>
           </button>
-          <input ref={fileInput} type="file" multiple className="visually-hidden" tabIndex={-1} aria-label="Choose SCAD files or a project file" accept=".scad,.json,text/plain,application/json" onChange={(event) => {
+          <input ref={fileInput} type="file" multiple className="visually-hidden" tabIndex={-1} aria-label="Choose SCAD files, STEP or STL files, or a project file" accept=".scad,.json,.zip,.step,.stp,.stl,text/plain,application/json,application/zip" onChange={(event) => {
             const list = [...(event.currentTarget.files ?? [])];
             event.currentTarget.value = '';
             if (list.length) void openFiles(list);
           }}/>
-          <button className="button button-quiet file-action" type="button" title="Download the open SCAD file" aria-label="Save file" onClick={saveScad}>
+          <button className="button button-quiet file-action" type="button" title="Download the open file as it is" aria-label="Save file" onClick={saveScad}>
             <FileCode2 size={17}/><span>Save file</span>
           </button>
-          <button className="button button-quiet file-action" type="button" title="Download every file as one project file to share or reopen (Ctrl/Cmd+S)" aria-label="Save project" onClick={saveProject}>
+          <button className="button button-quiet file-action" type="button" title="Download every file, imported ones included, as one zip to share or reopen (Ctrl/Cmd+S)" aria-label="Save project" onClick={() => void saveProject()}>
             <FolderArchive size={17}/><span>Save project</span>
           </button>
           <span className="action-divider" />
@@ -476,7 +532,7 @@ export function App() {
                   <div key={file.name} className={`file-tab${selected ? ' selected' : ''}${pinned ? ' pinned' : ''}`}>
                     <button type="button" role="tab" aria-selected={selected} className="file-tab-name" title={pinned ? `${file.name} · Run builds this file` : file.name}
                       onClick={() => showFile(file.name)} onDoubleClick={() => renameFile(file.name)}>
-                      {pinned ? <Boxes size={14}/> : <CodeXml size={14}/>}<span>{file.name}</span>
+                      {pinned ? <Boxes size={14}/> : isAsset(file) ? <FileBox size={14}/> : <CodeXml size={14}/>}<span>{file.name}</span>
                     </button>
                     {selected && (
                       <span className="file-tab-tools">
@@ -510,11 +566,24 @@ export function App() {
               </div>
             </details>
           </div>
-          <CodeEditor key={`${doc.fileKey}:${activeFile.name}`} ref={editor} source={activeFile.source} onChange={editSource} onCaret={setCaret} diagnostic={problem && problemFile === activeFile.name ? problem : undefined}/>
-          <div className="editor-meter">
-            <span>Ln {caret.line}, Col {caret.column}</span>
-            <span>{target !== activeFile.name && <>Run builds {target} · </>}{caret.count} lines</span>
-          </div>
+          {isAsset(activeFile) ? (
+            <>
+              <AssetPanel key={`${doc.fileKey}:${activeFile.name}`} file={activeFile} model={currentBuild ? preview : undefined} busy={!!stage}
+                problem={problem && problemFile === activeFile.name ? problem : undefined} onShow={() => showOnItsOwn(activeFile.name)}/>
+              <div className="editor-meter">
+                <span>{formatBytes(activeFile.data.byteLength)}</span>
+                <span>{target !== activeFile.name && <>Run builds {target}</>}</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <CodeEditor key={`${doc.fileKey}:${activeFile.name}`} ref={editor} source={activeFile.source} onChange={editSource} onCaret={setCaret} diagnostic={problem && problemFile === activeFile.name ? problem : undefined}/>
+              <div className="editor-meter">
+                <span>Ln {caret.line}, Col {caret.column}</span>
+                <span>{target !== activeFile.name && <>Run builds {target} · </>}{caret.count} lines</span>
+              </div>
+            </>
+          )}
           <section className="output" aria-label="Build output">
             <button type="button" className="output-heading" aria-expanded={outputOpen} aria-controls="build-log" onClick={() => setOutputOpen(!outputOpen)}>
               {outputOpen ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}<Terminal size={15}/><span>Build output</span>
@@ -538,7 +607,7 @@ export function App() {
         </section>
 
         <Viewport model={preview} pose={pose} stale={!currentBuild} running={stage ? stages[stage] : undefined}
-          onPose={updatePose} onResetPose={() => preview && updatePose(openingPose(preview.assembly).pose)}/>
+          onPose={updatePose} onResetPose={() => preview && updatePose(openingPose(preview.assembly).pose)} onMeasure={measurePicks}/>
       </main>
 
       <footer className="app-footer">
@@ -569,10 +638,12 @@ export function App() {
             <dd>To make an assembly from a design kept in one file, <code>include</code> it, add <code>part = "none";</code> so it draws nothing of its own, then call its modules inside <code>part("name") ...</code>. Every part comes from a single evaluation, and an edit rebuilds only the parts that changed. Do not wrap <code>part()</code> in <code>translate()</code>; use <code>at</code> and <code>rot</code>, or move the shapes inside the braces.</dd>
             <dt>BOSL2</dt>
             <dd>Gears, threads, screws and more come from the BOSL2 library. Start the file with <code>include &lt;BOSL2/std.scad&gt;</code>, add the file you need such as <code>include &lt;BOSL2/gears.scad&gt;</code>, then call <code>spur_gear(mod = 2, teeth = 20, thickness = 8);</code>. The library is about 1.2 MB and downloads the first time a project includes it during a visit. Each run that includes it takes about a quarter of a second longer, so write many parts in one file with <code>part("name") ...</code> rather than one file per part. Gears are exact; threads are faceted, so their STEP has flat faces.</dd>
+            <dt>Imported STEP and STL files</dt>
+            <dd>Choose <strong>Open</strong> and pick a <code>.step</code>, <code>.stp</code> or <code>.stl</code> file, such as a motor or a bearing from GrabCAD or a supplier. It becomes a tab you can look at with <strong>Show on its own</strong> and measure. Use it as a part with <code>part("motor", "motor.step");</code> and connect it with joints like any other part. A STEP keeps its true curves and exports as it came. An STL is a mesh with no units, read as millimetres, so it exports with flat faces. Inside a <code>.scad</code> file, <code>import("bracket.stl");</code> reads an STL of the project too. Files from a CAD program's own format (<code>.sldprt</code>, <code>.ipt</code>, <code>.f3d</code>, <code>.x_t</code>) and IGES files cannot be read, so download or export the STEP version. One file can be up to 40 MB and a project up to 120 MB of them.</dd>
             <dt>Sharing values</dt>
-            <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>Save project</strong> downloads every file as one file a teammate can open.</dd>
+            <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>Save project</strong> downloads every file, imported ones included, as one zip a teammate can open.</dd>
             <dt>Model limits</dt>
-            <dd>In millimetres. A part must have volume, and a file that draws only flat 2D shapes needs <code>linear_extrude()</code>. Collision checks are unavailable. Imports and libraries other than BOSL2 are unavailable in this version, and <code>text()</code> fails because no fonts are bundled. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
+            <dd>In millimetres. A part must have volume, and a file that draws only flat 2D shapes needs <code>linear_extrude()</code>. Collision checks are unavailable. Libraries other than BOSL2 are unavailable in this version, and <code>text()</code> fails because no fonts are bundled. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
           </dl>
           <div className="dialog-actions">
             <a className="button button-step" href={`${import.meta.env.BASE_URL}source/partscript-cad-source.zip`} download><Download size={16}/> Download source</a>

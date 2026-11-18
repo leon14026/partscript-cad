@@ -1,10 +1,11 @@
-import { Box, Boxes, CornerDownRight, Expand, Eye, EyeOff, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, RotateCcw, RotateCw, TriangleAlert } from 'lucide-react';
+import { Box, Boxes, Check, Copy, CornerDownRight, Expand, Eye, EyeOff, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, Ruler, RotateCcw, RotateCw, TriangleAlert, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { clampJoint, followerStates, movingJoints, poseBounds, structureOf, turnsFully, type JointSpec } from '../engine/assembly.ts';
 import { advanceJoint, loopStates, moveJoint } from '../engine/kinematics.ts';
-import type { ModelPreview, Pose } from '../engine/protocol.ts';
+import type { MeasurePick, MeasureResult, ModelPreview, Pose, Reading } from '../engine/protocol.ts';
 import { partQualities } from '../engine/summary.ts';
-import { createViewer, type ViewAngle } from './viewer.ts';
+import type { Hit } from '../picking.ts';
+import { createViewer, type Mark, type ViewAngle } from './viewer.ts';
 
 const angles: { angle: ViewAngle; label: string; name: string }[] = [
   { angle: 'iso', label: 'ISO', name: 'Isometric' },
@@ -13,6 +14,10 @@ const angles: { angle: ViewAngle; label: string; name: string }[] = [
   { angle: 'right', label: 'RIGHT', name: 'Right' },
 ];
 const measure = new Intl.NumberFormat('en-US', { maximumFractionDigits: 4, useGrouping: false });
+// Readings of the Measure tool: 0.001 mm (and mm²), 0.01 degree.
+const lengthFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3, useGrouping: false });
+const angleFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2, useGrouping: false });
+const readingText = (reading: Reading) => (reading.unit === '°' ? angleFormat : lengthFormat).format(Math.abs(reading.value) < 5e-4 && reading.unit !== '°' ? 0 : reading.value);
 
 interface JointControlProps {
   joint: JointSpec;
@@ -20,11 +25,13 @@ interface JointControlProps {
   /** True when the joint is part of a closed loop, so other joints follow it. */
   linked: boolean;
   playing: boolean;
+  /** Playing is off while a measurement is shown, because its values belong to one pose. */
+  locked: boolean;
   onChange(value: number, dragging: boolean): void;
   onPlay(): void;
 }
 
-function JointControl({ joint, value, linked, playing, onChange, onPlay }: JointControlProps) {
+function JointControl({ joint, value, linked, playing, locked, onChange, onPlay }: JointControlProps) {
   const [low, high] = joint.limits;
   const unit = joint.type === 'hinge' ? '°' : 'mm';
   const step = high - low > 20 ? 1 : 0.1;
@@ -38,7 +45,7 @@ function JointControl({ joint, value, linked, playing, onChange, onPlay }: Joint
         {linked && <Link2 className="joint-linked" size={12} aria-label="in a loop"/>}
       </label>
       <span className="joint-value">
-        <button type="button" className="joint-play" aria-pressed={playing} title={playing ? `Stop ${joint.name}` : `Run ${joint.name} through its travel`} aria-label={playing ? `Stop ${joint.name}` : `Play ${joint.name}`} disabled={joint.limits[0] === joint.limits[1]} onClick={onPlay}>
+        <button type="button" className="joint-play" aria-pressed={playing} title={locked ? 'Clear the measurement to play a joint' : playing ? `Stop ${joint.name}` : `Run ${joint.name} through its travel`} aria-label={playing ? `Stop ${joint.name}` : `Play ${joint.name}`} disabled={joint.limits[0] === joint.limits[1] || locked} onClick={onPlay}>
           {playing ? <Pause size={11}/> : <Play size={11}/>}
         </button>
         <input type="number" aria-label={`${joint.name} value in ${joint.type === 'hinge' ? 'degrees' : 'millimetres'}`} min={low} max={high} step={step}
@@ -59,6 +66,25 @@ function JointControl({ joint, value, linked, playing, onChange, onPlay }: Joint
   );
 }
 
+function ReadingRow({ reading }: { reading: Reading }) {
+  const [copied, setCopied] = useState(false);
+  const text = readingText(reading);
+  return (
+    <div className="reading">
+      <dt>{reading.label}</dt>
+      <dd>
+        <span>{text}</span><i>{reading.unit}</i>
+        <button type="button" title={`Copy ${text}`} aria-label={`Copy ${reading.label} ${text}`} onClick={() => {
+          void navigator.clipboard?.writeText(text).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1200);
+          }, () => {});
+        }}>{copied ? <Check size={12}/> : <Copy size={12}/>}</button>
+      </dd>
+    </div>
+  );
+}
+
 interface ViewportProps {
   model?: ModelPreview;
   pose: Pose;
@@ -66,9 +92,11 @@ interface ViewportProps {
   running?: string;
   onPose(pose: Pose): void;
   onResetPose(): void;
+  /** Read one or two picks of the model on screen, in a pose. Rejects with a message the engineer can act on. */
+  onMeasure(picks: MeasurePick[], pose: Pose): Promise<MeasureResult>;
 }
 
-export function Viewport({ model, pose, stale, running, onPose, onResetPose }: ViewportProps) {
+export function Viewport({ model, pose, stale, running, onPose, onResetPose, onMeasure }: ViewportProps) {
   const canvasHost = useRef<HTMLDivElement>(null);
   const controller = useRef<ReturnType<typeof createViewer> | null>(null);
   const shown = useRef<ModelPreview | undefined>(undefined);
@@ -83,8 +111,14 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
   // Parts left out of the preview, by name. The STEP export still holds every part.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const partsMenu = useRef<HTMLDetailsElement>(null);
-  const live = useRef({ model, pose, onPose });
-  live.current = { model, pose, onPose };
+  // The Measure tool: what is picked (at most two), what the engine read from them, and why it could not.
+  const [measuring, setMeasuring] = useState(false);
+  const [picks, setPicks] = useState<Mark[]>([]);
+  const [result, setResult] = useState<MeasureResult | null>(null);
+  const [measureError, setMeasureError] = useState<string | null>(null);
+  const reading = useRef({ busy: false, wanted: null as { picks: MeasurePick[]; pose: Pose } | null, latest: null as object | null });
+  const live = useRef({ model, pose, onPose, onMeasure, picks, measuring });
+  live.current = { model, pose, onPose, onMeasure, picks, measuring };
 
   useEffect(() => {
     if (!canvasHost.current) return;
@@ -153,6 +187,84 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
       return kept.length === current.size ? current : new Set(kept);
     });
   }, [model]);
+  // Measure: the picks are kept in the page, the numbers come from the engine in the pose that is shown.
+  useEffect(() => {
+    controller.current?.setMeasure(measuring ? {
+      onPick(hit: Hit | undefined) {
+        if (!hit) {
+          setPicks([]);
+          return;
+        }
+        const mark: Mark = { part: hit.part, type: hit.type, index: hit.index };
+        setPicks((current) => {
+          if (current.length >= 2) return [mark];
+          return current.some((item) => item.part === mark.part && item.type === mark.type && item.index === mark.index) ? current : [...current, mark];
+        });
+      },
+    } : undefined);
+  }, [measuring]);
+  useEffect(() => controller.current?.setPicks(picks, result?.line), [picks, result]);
+  useEffect(() => {
+    // Indices belong to one build.
+    setPicks([]);
+    setResult(null);
+    setMeasureError(null);
+    reading.current.latest = null;
+  }, [model]);
+  useEffect(() => {
+    const state = reading.current;
+    if (!live.current.model || !picks.length) {
+      state.latest = null;
+      state.wanted = null;
+      setResult(null);
+      setMeasureError(null);
+      return;
+    }
+    setPlaying(null);
+    const job = { picks: picks.map(({ part, type, index }): MeasurePick => ({ part, type, index })), pose };
+    state.latest = job;
+    state.wanted = job;
+    // One reading at a time. A joint slider asks for many, and only the latest one is answered.
+    const pump = () => {
+      const next = state.wanted;
+      if (state.busy || !next) return;
+      state.wanted = null;
+      state.busy = true;
+      live.current.onMeasure(next.picks, next.pose).then((answer) => {
+        if (state.latest === next) {
+          setResult(answer);
+          setMeasureError(null);
+        }
+      }, (error: unknown) => {
+        if (state.latest === next) {
+          setResult(null);
+          setMeasureError(error instanceof Error ? error.message : 'The measurement failed. Pick again.');
+        }
+      }).finally(() => {
+        state.busy = false;
+        pump();
+      });
+    };
+    pump();
+  }, [picks, pose, model]);
+  // Esc clears the picks, and a second Esc leaves the tool.
+  useEffect(() => {
+    if (!measuring) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (partsMenu.current?.open) return;
+      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (live.current.picks.length) setPicks([]);
+      else setMeasuring(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [measuring]);
+  // The tool needs a build to read from.
+  useEffect(() => {
+    if (!model) setMeasuring(false);
+  }, [model]);
+
   useEffect(() => {
     const close = (event: PointerEvent) => {
       const menu = partsMenu.current;
@@ -220,13 +332,17 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
               </div>
             </details>
           )}
+          <button className="view-tool" type="button" disabled={!model} aria-pressed={measuring}
+            title={measuring ? 'Leave Measure (Esc)' : 'Measure: click a face, an edge or a corner. Click two to read the distance and angle between them.'}
+            onClick={() => setMeasuring(!measuring)}><Ruler size={16}/><span>Measure</span></button>
+          <span className="view-tool-divider" />
           <button className="view-tool" type="button" title="Toggle grid and axes" aria-pressed={grid} onClick={() => setGrid(!grid)}><Grid3X3 size={16}/><span>Grid</span></button>
           <button className="view-tool" type="button" title="Toggle part edges" aria-pressed={edges} onClick={() => setEdges(!edges)}><Layers2 size={16}/><span>Edges</span></button>
           <span className="view-tool-divider" />
           <button className="view-tool" type="button" title="Fit model to view" aria-label="Fit model to view" onClick={() => controller.current?.fit()}><Expand size={16}/></button>
         </div>
       </div>
-      <div className="preview-stage">
+      <div className={`preview-stage${measuring ? ' measuring' : ''}`}>
         <div className="canvas-host" ref={canvasHost} />
         <div className="view-angles" aria-label="View angle">
           {angles.map((item) => (
@@ -236,6 +352,31 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
             }}>{item.label}</button>
           ))}
         </div>
+        {measuring && model && !graphicsFailed && (
+          <section className="measure-card" aria-label="Measurement">
+            <header>
+              <Ruler size={14}/><strong>Measure</strong>
+              <button type="button" className="measure-clear" disabled={!picks.length} onClick={() => setPicks([])}><X size={12}/> Clear</button>
+            </header>
+            {!picks.length && <p className="measure-hint">Click a face, an edge or a corner. Click a second one to read the distance and angle between them. Esc clears.</p>}
+            {picks.length === 1 && !result && !measureError && <p className="measure-hint">Reading…</p>}
+            {result?.items.map((item, i) => (
+              <div className="measure-item" key={i}>
+                <h3><i className={i ? 'second' : 'first'} aria-hidden="true"/>{item.title}</h3>
+                <dl>{item.readings.map((entry) => <ReadingRow key={entry.label} reading={entry}/>)}</dl>
+              </div>
+            ))}
+            {result && result.between.length > 0 && (
+              <div className="measure-item">
+                <h3>Between the two</h3>
+                <dl>{result.between.map((entry) => <ReadingRow key={entry.label} reading={entry}/>)}</dl>
+              </div>
+            )}
+            {picks.length === 2 && result && result.between.length === 0 && <p className="measure-hint">Nothing to read between these two.</p>}
+            {result?.notes.map((note) => <p className="measure-note" key={note}>{note}</p>)}
+            {measureError && <p className="measure-error" role="alert">{measureError}</p>}
+          </section>
+        )}
         {joints.length > 0 && !graphicsFailed && (
           <section className="joints" aria-label="Joints">
             <header>
@@ -248,7 +389,7 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose }: V
               <div className="joint-list">
                 {joints.map((joint) => (
                   <JointControl key={joint.name} joint={joint} value={clampJoint(joint, pose[joint.name])}
-                    linked={looped[model!.assembly.joints.indexOf(joint)]} playing={playing === joint.name}
+                    linked={looped[model!.assembly.joints.indexOf(joint)]} playing={playing === joint.name} locked={picks.length > 0}
                     onPlay={() => setPlaying(playing === joint.name ? null : joint.name)}
                     onChange={(value, isDragging) => {
                       if (playing) setPlaying(null);

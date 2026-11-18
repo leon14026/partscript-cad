@@ -1,3 +1,4 @@
+import { assetNamePattern, stemOf, unreadableFormat } from './assets.ts';
 import { CadError, type Pose, type Vec3 } from './protocol.ts';
 
 /**
@@ -252,7 +253,9 @@ export function readAssembly(records: string[]): AssemblySpec {
       } else {
         if (children) fail(what, 'it has both a file and shapes in braces. Use one.');
         file = text(fields[3], what, 'file name');
-        if (!fileNamePattern.test(file)) fail(what, `"${file}" is not a project file name. Use a name such as "arm.scad".`);
+        if (!fileNamePattern.test(file) && !assetNamePattern.test(file)) {
+          fail(what, unreadableFormat(file) ?? `"${file}" is not a project file name. Use a name such as "arm.scad", or an imported file such as "motor.step" or "bracket.stl". Letters in the extension are lower case.`);
+        }
       }
       const at = vector(fields[4], what, 'at') as Vec3;
       const rot = vector(fields[5], what, 'rot') as Vec3;
@@ -356,7 +359,7 @@ function checkFollowers(joints: JointSpec[]) {
 
 /** A single part file is shown and exported as an assembly of one part. */
 export function singlePart(file: string): AssemblySpec {
-  return { parts: [{ name: file.replace(/\.scad$/i, ''), file, inline: false, at: [0, 0, 0], rot: [0, 0, 0], color: palette[0], colorGiven: false }], joints: [] };
+  return { parts: [{ name: stemOf(file), file, inline: false, at: [0, 0, 0], rot: [0, 0, 0], color: palette[0], colorGiven: false }], joints: [] };
 }
 
 export const identity: Matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];

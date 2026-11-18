@@ -1,9 +1,10 @@
-import { CadError, JOB_TIMEOUT_MS, type BuildStage, type GeometryCommand, type GeometryReply, type Pose, type ProjectFiles } from './protocol.ts';
+import { CadError, JOB_TIMEOUT_MS, type BuildStage, type GeometryCommand, type GeometryReply, type MeasurePick, type Pose, type ProjectAssets, type ProjectFiles } from './protocol.ts';
 
-type JobResult = Extract<GeometryReply, { kind: 'preview' | 'step' }>;
+type JobResult = Extract<GeometryReply, { kind: 'preview' | 'step' | 'measure' }>;
 type JobCommand =
-  | { kind: 'build'; revision: number; files: ProjectFiles; entry: string }
-  | { kind: 'export'; revision: number; pose: Pose };
+  | { kind: 'build'; revision: number; files: ProjectFiles; entry: string; assetNames: string[]; newAssets: ProjectAssets }
+  | { kind: 'export'; revision: number; pose: Pose }
+  | { kind: 'measure'; revision: number; pose: Pose; picks: MeasurePick[] };
 
 interface PendingJob {
   id: number;
@@ -17,9 +18,14 @@ export class BrowserGeometryEngine {
   #worker?: Worker;
   #pending?: PendingJob;
   #nextId = 0;
+  /** The assets the current worker holds. A worker keeps what it is sent, so a build sends only what it lacks. */
+  #held = new Map<string, Uint8Array>();
 
-  async build(files: ProjectFiles, entry: string, revision: number, progress: PendingJob['progress']) {
-    const reply = await this.#send({ kind: 'build', files, entry, revision }, progress);
+  async build(files: ProjectFiles, assets: ProjectAssets, entry: string, revision: number, progress: PendingJob['progress']) {
+    const newAssets: ProjectAssets = {};
+    for (const [name, bytes] of Object.entries(assets)) if (this.#held.get(name) !== bytes) newAssets[name] = bytes;
+    const reply = await this.#send({ kind: 'build', files, entry, revision, assetNames: Object.keys(assets), newAssets }, progress,
+      () => { this.#held = new Map(Object.entries(assets)); });
     if (reply.kind !== 'preview') throw new CadError('The geometry engine returned an unexpected result.');
     return reply.model;
   }
@@ -30,9 +36,16 @@ export class BrowserGeometryEngine {
     return reply.bytes;
   }
 
+  async measure(revision: number, pose: Pose, picks: MeasurePick[]) {
+    const reply = await this.#send({ kind: 'measure', revision, pose, picks }, () => {});
+    if (reply.kind !== 'measure') throw new CadError('The geometry engine returned an unexpected result.');
+    return reply.result;
+  }
+
   cancel(reason = 'Cancelled. Run the current code to build the model again.') {
     this.#worker?.terminate();
     this.#worker = undefined;
+    this.#held.clear();
     this.#finish()?.reject(new CadError(reason));
   }
 
@@ -63,7 +76,7 @@ export class BrowserGeometryEngine {
     return worker;
   }
 
-  async #send(command: JobCommand, progress: PendingJob['progress']): Promise<JobResult> {
+  async #send(command: JobCommand, progress: PendingJob['progress'], sent?: () => void): Promise<JobResult> {
     if (this.#pending) throw new CadError('A geometry job is already running.');
     const worker = this.#getWorker();
     const request: GeometryCommand = { ...command, id: ++this.#nextId };
@@ -72,6 +85,7 @@ export class BrowserGeometryEngine {
       this.#pending = { id: request.id, timer, progress, resolve, reject };
       try {
         worker.postMessage(request);
+        sent?.();
       } catch {
         this.cancel('Could not send the model to the geometry worker.');
       }

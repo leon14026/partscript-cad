@@ -8,6 +8,16 @@ export interface SoftwarePart {
   color: [number, number, number];
   /** A hidden part is left out of the picture, including its edges and what they would hide. */
   hidden?: boolean;
+  /** For the measure tool: faces mixed with a colour. `amount` is the share of the colour, 0 to 1. */
+  faceTints?: { face: number; color: [number, number, number]; amount: number }[];
+  /** For the measure tool: edges drawn wide in a colour, as line segments in the part's own coordinates. */
+  edgeMarks?: { segments: Float32Array; color: [number, number, number] }[];
+}
+
+/** Dots and a line for the measure tool, in the scene's coordinates. They show through the parts. */
+export interface SoftwareGuides {
+  dots: { at: [number, number, number]; color: string }[];
+  line?: { from: [number, number, number]; to: [number, number, number]; color: string };
 }
 
 interface Frame {
@@ -18,6 +28,7 @@ interface Frame {
   edgesVisible: boolean;
   /** Draw at half size without edges while a joint is being dragged. */
   draft: boolean;
+  guides?: SoftwareGuides;
 }
 
 // Directions the two lights shine from, in world coordinates.
@@ -83,15 +94,16 @@ export function createSoftwarePreview(canvas: HTMLCanvasElement) {
     if (colors.length === 1) context!.stroke();
   }
 
-  function drawTriangles({ mesh: model, matrix: world, color: tint }: SoftwarePart, points: Float32Array) {
+  function drawTriangles(part: SoftwarePart, points: Float32Array) {
+    const { mesh: model, matrix: world, color: base } = part;
     // A part can be turned by its joints. Turn the lights into its own frame instead of turning every normal.
     const w = world.elements;
     const local = (light: number[]) => [0, 4, 8].map((c) => w[c] * light[0] + w[c + 1] * light[1] + w[c + 2] * light[2]);
     const [ax0, ay0, az0] = local(lightA);
     const [bx0, by0, bz0] = local(lightB);
-    const red = Math.min(255, tint[0] * 314);
-    const green = Math.min(255, tint[1] * 314);
-    const blue = Math.min(255, tint[2] * 314);
+    const red = Math.min(255, base[0] * 314);
+    const green = Math.min(255, base[1] * 314);
+    const blue = Math.min(255, base[2] * 314);
     const lights = new Float32Array(model.normals.length / 3);
     for (let n = 0; n < model.normals.length; n += 3) {
       const [x, y, z] = [model.normals[n], model.normals[n + 1], model.normals[n + 2]];
@@ -100,7 +112,9 @@ export function createSoftwarePreview(canvas: HTMLCanvasElement) {
     }
     const { data } = pixels;
     const triangles = model.indices;
+    const tints = part.faceTints ?? [];
     for (let i = 0; i < triangles.length; i += 3) {
+      const tint = tints.length ? tints.find((item) => item.face === model.faceOf[i / 3]) : undefined;
       const a = triangles[i] * 3;
       const b = triangles[i + 1] * 3;
       const c = triangles[i + 2] * 3;
@@ -143,12 +157,18 @@ export function createSoftwarePreview(canvas: HTMLCanvasElement) {
           data[color + 1] = green * light;
           data[color + 2] = blue * light;
           data[color + 3] = 255;
+          if (tint) {
+            const mix = tint.amount;
+            data[color] = data[color] * (1 - mix) + tint.color[0] * mix;
+            data[color + 1] = data[color + 1] * (1 - mix) + tint.color[1] * mix;
+            data[color + 2] = data[color + 2] * (1 - mix) + tint.color[2] * mix;
+          }
         }
       }
     }
   }
 
-  function drawEdges(points: Float32Array) {
+  function drawEdges(points: Float32Array, mark?: [number, number, number]) {
     const { data } = pixels;
     for (let i = 0; i < points.length; i += 6) {
       const ax = points[i];
@@ -169,6 +189,16 @@ export function createSoftwarePreview(canvas: HTMLCanvasElement) {
         const pixel = y * width + x;
         // Compare near the triangle sample so hidden edges stay behind its surface.
         if (depth[pixel] === Infinity || az + fraction * dz > depth[pixel] + 0.00018) continue;
+        if (mark) {
+          // A marked edge is two pixels wide and solid.
+          for (const next of [pixel, x + 1 < width ? pixel + 1 : pixel, y + 1 < height ? pixel + width : pixel]) {
+            data[next * 4] = mark[0];
+            data[next * 4 + 1] = mark[1];
+            data[next * 4 + 2] = mark[2];
+            data[next * 4 + 3] = 255;
+          }
+          continue;
+        }
         const color = pixel * 4;
         data[color] = data[color] * 0.63 + 51 * 0.37;
         data[color + 1] = data[color + 1] * 0.63 + 37 * 0.37;
@@ -177,7 +207,31 @@ export function createSoftwarePreview(canvas: HTMLCanvasElement) {
     }
   }
 
-  function draw({ camera, parts, grid, axes, edgesVisible, draft }: Frame) {
+  function drawGuides({ dots, line }: SoftwareGuides) {
+    const target = context!;
+    const screen = (p: [number, number, number]) => project(p, view);
+    if (line) {
+      const [a, b] = [screen(line.from), screen(line.to)];
+      target.lineWidth = 2;
+      target.strokeStyle = line.color;
+      target.beginPath();
+      target.moveTo(a[0], a[1]);
+      target.lineTo(b[0], b[1]);
+      target.stroke();
+    }
+    for (const dot of dots) {
+      const [x, y] = screen(dot.at);
+      target.fillStyle = dot.color;
+      target.strokeStyle = '#10171e';
+      target.lineWidth = 1.5;
+      target.beginPath();
+      target.arc(x, y, 5, 0, Math.PI * 2);
+      target.fill();
+      target.stroke();
+    }
+  }
+
+  function draw({ camera, parts, grid, axes, edgesVisible, draft, guides }: Frame) {
     const wanted = draft ? 512 : 1024;
     if (wanted !== limit) {
       limit = wanted;
@@ -200,8 +254,13 @@ export function createSoftwarePreview(canvas: HTMLCanvasElement) {
     if (edgesVisible && !draft) {
       for (const part of drawn) drawEdges(project(part.mesh.edgeSegments, matrix.multiplyMatrices(view, part.matrix)));
     }
+    // Marked edges are drawn even in a draft, and over the plain edges.
+    for (const part of drawn) {
+      for (const mark of part.edgeMarks ?? []) drawEdges(project(mark.segments, matrix.multiplyMatrices(view, part.matrix)), mark.color);
+    }
     layerContext!.putImageData(pixels, 0, 0);
     context!.drawImage(layer, 0, 0);
+    if (guides) drawGuides(guides);
   }
 
   return { resize, draw };

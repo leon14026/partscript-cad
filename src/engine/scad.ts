@@ -1,5 +1,6 @@
 import { assemblyPrelude, fileNamePattern, recordMarker } from './assembly.ts';
-import { CadError, MAX_PROJECT_BYTES, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type ProjectFiles } from './protocol.ts';
+import { assetFormat, assetNamePattern, formatBytes } from './assets.ts';
+import { CadError, MAX_ASSET_BYTES, MAX_ASSETS_BYTES, MAX_PROJECT_BYTES, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type ProjectAssets, type ProjectFiles } from './protocol.ts';
 
 export interface OpenScadModule {
   callMain(args: string[]): number;
@@ -47,8 +48,14 @@ function libraryOf(target: string) {
   return match && Object.hasOwn(libraries, match[1]) ? match[1] : undefined;
 }
 
-/** Checks one file. Returns the libraries it includes. */
-function checkSource(name: string, source: string, files: ProjectFiles): string[] {
+interface SourceUse {
+  libraries: string[];
+  /** The project STL files the source imports with import("name.stl"). */
+  meshes: string[];
+}
+
+/** Checks one file. Returns the libraries it includes and the STL files it imports. */
+function checkSource(name: string, source: string, files: ProjectFiles, assets: ProjectAssets): SourceUse {
   if (new TextEncoder().encode(source).byteLength > MAX_SOURCE_BYTES) {
     throw new CadError(`${name} is larger than 256 KiB.`, undefined, name);
   }
@@ -57,11 +64,32 @@ function checkSource(name: string, source: string, files: ProjectFiles): string[
   const code = source.replace(/"(?:\\[\s\S]|[^"\\])*"|\/\*[\s\S]*?(?:\*\/|$)|\/\/[^\r\n]*/g,
     (matched) => matched.replace(/[^\r\n]/g, ' '));
   const restricted = [
-    [/\b(?:import|import_stl|import_dxf|surface)\s*\(/, 'Imported geometry is unavailable in this version.'],
+    [/\b(?:import_stl|import_dxf|surface)\s*\(/, 'Imported geometry other than an STL file of this project is unavailable in this version.'],
   ] as const;
   for (const [pattern, message] of restricted) {
     const match = pattern.exec(code);
     if (match) throw new CadError(message, lineOf(code, match.index), name);
+  }
+
+  // import("name.stl") reads a project STL. Strings are blanked in `code`, so read the name from the original text.
+  const meshes = new Set<string>();
+  for (const match of code.matchAll(/\bimport\s*\(/g)) {
+    const line = lineOf(code, match.index);
+    const argument = /^\s*(?:file\s*=\s*)?"((?:[^"\\]|\\.)*)"/.exec(source.slice(match.index + match[0].length));
+    if (!argument) {
+      throw new CadError('import() needs the file name written out in quotes, for example import("bracket.stl"). A name held in a variable cannot be checked.', line, name);
+    }
+    const target = argument[1];
+    const format = assetFormat(target);
+    if (format === 'step') {
+      throw new CadError(`OpenSCAD cannot read STEP files inside a model. Add ${target} to the project and use it as a part instead: part("name", "${target}");`, line, name);
+    }
+    if (format !== 'stl' || !Object.hasOwn(assets, target)) {
+      throw new CadError(format === 'stl' || /\.stl$/i.test(target)
+        ? `${target} is not in this project. Add the STL file to the project, or correct the name. File names are case sensitive, and the extension is lower case.`
+        : `import() can only read an STL file that is in this project. ${target || 'This name'} is not one.`, line, name);
+    }
+    meshes.add(target);
   }
 
   // Comments are blanked above, so read the file name from the original text at the same offset.
@@ -77,24 +105,54 @@ function checkSource(name: string, source: string, files: ProjectFiles): string[
         : `${target} is not in this project. Add the file or correct the name.`, lineOf(code, match.index), name);
     }
   }
-  return [...used];
+  return { libraries: [...used], meshes: [...meshes] };
 }
 
-/** Checks every file of a project and returns the libraries it includes, so the caller can load them. */
-export function checkProject(files: ProjectFiles, entry: string): string[] {
+/** What a project's files need: the libraries to load and the STL files OpenSCAD reads. */
+export interface ProjectNeeds {
+  libraries: string[];
+  meshes: string[];
+}
+
+/**
+ * Checks every file and asset of a project. `entry` is a .scad file, or an asset to look at on its own.
+ * Returns what the build has to load before it evaluates anything.
+ */
+export function inspectProject(files: ProjectFiles, entry: string, assets: ProjectAssets = {}): ProjectNeeds {
   const names = Object.keys(files);
-  if (!Object.hasOwn(files, entry)) throw new CadError(`${entry} is not in this project.`);
-  if (names.length > MAX_PROJECT_FILES) throw new CadError(`A project can hold ${MAX_PROJECT_FILES} files.`);
+  const assetNames = Object.keys(assets);
+  if (!Object.hasOwn(files, entry) && !Object.hasOwn(assets, entry)) throw new CadError(`${entry} is not in this project.`);
+  if (names.length + assetNames.length > MAX_PROJECT_FILES) throw new CadError(`A project can hold ${MAX_PROJECT_FILES} files.`);
   let total = 0;
-  const used = new Set<string>();
+  const libraries = new Set<string>();
+  const meshes = new Set<string>();
   for (const name of names) {
     if (!fileNamePattern.test(name)) throw new CadError(`${name} is not a usable file name. Use letters, digits, _ . and -, ending in .scad.`);
     total += files[name].length;
-    for (const library of checkSource(name, files[name], files)) used.add(library);
+    const found = checkSource(name, files[name], files, assets);
+    for (const library of found.libraries) libraries.add(library);
+    for (const mesh of found.meshes) meshes.add(mesh);
   }
   if (total > MAX_PROJECT_BYTES) throw new CadError('The project is larger than 1 MiB of source.');
-  if (!files[entry].trim()) throw new CadError('Write a model before running the editor.', undefined, entry);
-  return [...used].sort();
+
+  let assetBytes = 0;
+  for (const name of assetNames) {
+    if (!assetNamePattern.test(name)) throw new CadError(`${name} is not a usable file name. Use letters, digits, _ . and -, ending in .step, .stp or .stl.`, undefined, name);
+    if (assets[name].byteLength > MAX_ASSET_BYTES) {
+      throw new CadError(`${name} is ${formatBytes(assets[name].byteLength)}. One imported file can be up to ${formatBytes(MAX_ASSET_BYTES)}. Export a simpler version, or remove small parts such as screws and threads before exporting.`, undefined, name);
+    }
+    assetBytes += assets[name].byteLength;
+  }
+  if (assetBytes > MAX_ASSETS_BYTES) {
+    throw new CadError(`The imported files add up to ${formatBytes(assetBytes)}. A project can hold ${formatBytes(MAX_ASSETS_BYTES)} of them. Remove a file that is not needed.`);
+  }
+  if (Object.hasOwn(files, entry) && !files[entry].trim()) throw new CadError('Write a model before running the editor.', undefined, entry);
+  return { libraries: [...libraries].sort(), meshes: [...meshes].sort() };
+}
+
+/** Checks every file of a project and returns the libraries it includes, so the caller can load them. */
+export function checkProject(files: ProjectFiles, entry: string, assets: ProjectAssets = {}): string[] {
+  return inspectProject(files, entry, assets).libraries;
 }
 
 /**
@@ -128,6 +186,7 @@ export async function evaluateScad(
   entry: string,
   createOpenScad: OpenScadFactory,
   mounted: Record<string, LibraryFiles> = {},
+  meshes: ProjectAssets = {},
 ): Promise<Evaluation> {
   let firstProblem: string | undefined;
   const messages: string[] = [];
@@ -149,6 +208,8 @@ export async function evaluateScad(
     // Modules can be defined after use, so the prelude goes last and line numbers stay true.
     scad.FS.writeFile(`/${name}`, name === entry ? `${source}\n${assemblyPrelude}` : source);
   }
+  // An imported STL is a file next to the project files, so import("bracket.stl") finds it.
+  for (const [name, bytes] of Object.entries(meshes)) scad.FS.writeFile(`/${name}`, bytes);
   // A library is a folder next to the project files, so include <BOSL2/std.scad> finds it.
   for (const [library, contents] of Object.entries(mounted)) {
     scad.FS.mkdir(`/${library}`);
@@ -222,11 +283,13 @@ export function flattenGroups(csg: string): string {
  * Mesh a CSG dump, or a slice of one, with OpenSCAD's own renderer. Returns a
  * binary STL. A dump is valid OpenSCAD input, so no libraries are needed.
  */
-export async function renderMesh(csg: string, createOpenScad: OpenScadFactory): Promise<Uint8Array> {
+export async function renderMesh(csg: string, createOpenScad: OpenScadFactory, meshes: ProjectAssets = {}): Promise<Uint8Array> {
   const lines: string[] = [];
   const print = (text: string) => lines.push(text);
   const scad = await createOpenScad({ noInitialRun: true, print, printErr: print });
   scad.FS.writeFile(meshInput, flattenGroups(csg));
+  // A dump names an imported STL by its path from the root, which is where the evaluation found it.
+  for (const [name, bytes] of Object.entries(meshes)) scad.FS.writeFile(`/${name}`, bytes);
   let status: number | undefined;
   try {
     status = scad.callMain(['--backend=manifold', '--export-format=binstl', '-o', meshOutput, meshInput]);
