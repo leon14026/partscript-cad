@@ -151,14 +151,14 @@ export function App() {
     setPose(next);
   }
 
-  async function run(snapshot = latest.current) {
+  async function run(snapshot = latest.current, extra: Record<string, string> = {}) {
     if (busy.current) return;
     busy.current = true;
     setBuiltRevision(null);
     setStage('load');
     const entry = snapshot.entry ?? snapshot.active;
     try {
-      const files = toFiles(snapshot);
+      const files = { ...toFiles(snapshot), ...extra };
       const result = await engine.build(files, toAssets(snapshot), entry, snapshot.revision, setStage);
       const rounds = flatRoundNotes(result, files, entry);
       const opening = carryPose(result.assembly, shownAssembly.current, shownPose.current);
@@ -429,6 +429,13 @@ export function App() {
     void run({ ...latest.current, entry: name });
   }
 
+  /** One component of an imported STEP, built alone from a part line that is not in any file. */
+  function showComponent(file: string, path: string) {
+    if (busy.current) return;
+    const name = '_component.scad';
+    void run({ ...latest.current, entry: name }, { [name]: `part("component", "${file}", component = "${path.replace(/"/g, '')}");` });
+  }
+
   function editSource(source: string) {
     const before = latest.current;
     const file = before.files.find((item) => item.name === before.active);
@@ -631,7 +638,7 @@ export function App() {
           {isAsset(activeFile) ? (
             <>
               <AssetPanel key={`${doc.fileKey}:${activeFile.name}`} file={activeFile} model={currentBuild ? preview : undefined} busy={!!stage}
-                problem={problem && problemFile === activeFile.name ? problem : undefined} onShow={() => showOnItsOwn(activeFile.name)}/>
+                problem={problem && problemFile === activeFile.name ? problem : undefined} onShow={() => showOnItsOwn(activeFile.name)} onShowPart={(path) => showComponent(activeFile.name, path)}/>
               <div className="editor-meter">
                 <span>{formatBytes(activeFile.data.byteLength)}</span>
                 <span>{target !== activeFile.name && <>Run builds {target}</>}</span>
@@ -703,7 +710,7 @@ export function App() {
             <dt>BOSL2</dt>
             <dd>Gears, threads, screws and more come from the BOSL2 library. Start the file with <code>include &lt;BOSL2/std.scad&gt;</code>, add the file you need such as <code>include &lt;BOSL2/gears.scad&gt;</code>, then call <code>spur_gear(mod = 2, teeth = 20, thickness = 8);</code>. The library is about 1.2 MB and downloads the first time a project includes it during a visit. Each run that includes it takes about a quarter of a second longer, so write many parts in one file with <code>part("name") ...</code> rather than one file per part. Gears are exact; threads are faceted, so their STEP has flat faces.</dd>
             <dt>Imported STEP and STL files</dt>
-            <dd>Choose <strong>Open</strong> and pick a <code>.step</code>, <code>.stp</code> or <code>.stl</code> file, such as a motor or a bearing from GrabCAD or a supplier. It becomes a tab you can look at with <strong>Show on its own</strong> and measure. Use it as a part with <code>part("motor", "motor.step");</code> and connect it with joints like any other part. A STEP keeps its true curves and exports as it came. An STL is a mesh with no units, read as millimetres, so it exports with flat faces. Inside a <code>.scad</code> file, <code>import("bracket.stl");</code> reads an STL of the project too. Files from a CAD program's own format (<code>.sldprt</code>, <code>.ipt</code>, <code>.f3d</code>, <code>.x_t</code>) and IGES files cannot be read, so download or export the STEP version. One file can be up to 40 MB and a project up to 120 MB of them.</dd>
+            <dd>Choose <strong>Open</strong> and pick a <code>.step</code>, <code>.stp</code> or <code>.stl</code> file, such as a motor or a bearing from GrabCAD or a supplier. It becomes a tab you can look at with <strong>Show on its own</strong> and measure. Use it as a part with <code>part("motor", "motor.step");</code> and connect it with joints like any other part. A STEP that holds an assembly lists its parts in its tab: <code>part("arm", "robot.step", component = "arm");</code> or <code>body = 2</code> takes one of them, in the place and colour the file gives it. A STEP keeps its true curves and exports as it came. An STL is a mesh with no units, read as millimetres, so it exports with flat faces. Inside a <code>.scad</code> file, <code>import("bracket.stl");</code> reads an STL of the project too. Files from a CAD program's own format (<code>.sldprt</code>, <code>.ipt</code>, <code>.f3d</code>, <code>.x_t</code>) and IGES files cannot be read, so download or export the STEP version. One file can be up to 40 MB and a project up to 120 MB of them.</dd>
             <dt>Sharing values</dt>
             <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>New</strong> starts a blank project with one file, and the <strong>+</strong> beside the tabs adds more. <strong>Save project</strong> downloads every file, imported ones included, as one zip a teammate can open.</dd>
             <dt>On a phone</dt>

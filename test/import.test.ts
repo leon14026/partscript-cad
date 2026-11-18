@@ -332,3 +332,189 @@ test('a part with thousands of faces is meshed more coarsely, so a large import 
   assert.ok(importedMeshing(2_000).angular < importedMeshing(9_000).angular);
   assert.ok(importedMeshing(9_000).angular <= 1);
 });
+
+// --- Phase 10: a STEP assembly opens as separate parts ---
+
+/** A base block and an arm that hinges at (40, 10, 5) about z. Worked by hand: the arm is 30 x 4 x 4 = 480 mm3, the base 40 x 20 x 10 = 8000. */
+const hingeProject: ProjectFiles = {
+  'hinge.scad': `part("base") { cube([40, 20, 10]); }
+part("arm") { translate([0, -2, -2]) cube([30, 4, 4]); }
+joint("h", type = "hinge", parent = "base", child = "arm", at = [40, 10, 5], axis = [0, 0, 1], limits = [0, 90], value = 0);`,
+};
+
+async function hingeStep(angle: number) {
+  const model = await build(hingeProject, 'hinge.scad');
+  return { model, bytes: builder.exportStep(model, { h: angle }) };
+}
+
+/** The box of a part's mesh points after its placement matrix. Exact for the points, unlike the box of the box. */
+function worldBox(mesh: { positions: Float32Array }, m: number[]) {
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  const p = mesh.positions;
+  for (let i = 0; i < p.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      const v = m[k * 4] * p[i] + m[k * 4 + 1] * p[i + 1] + m[k * 4 + 2] * p[i + 2] + m[k * 4 + 3];
+      min[k] = Math.min(min[k], v);
+      max[k] = Math.max(max[k], v);
+    }
+  }
+  return { min, max };
+}
+
+test('the swivel arm exported as STEP lists its four parts by name and colour, and each part has the volume of the original', async () => {
+  const original = await build(swivelArm, 'swivel_arm.scad');
+  const exported = builder.exportStep(original);
+  const model = await build({}, 'swivel.step', { 'swivel.step': exported });
+  const structure = model.preview.steps?.['swivel.step'];
+  assert.ok(structure, 'the build reports what the STEP holds');
+  assert.equal(structure.bodies, 4);
+  const names = original.assembly.parts.map((part) => part.name);
+  assert.deepEqual(structure.components.map((component) => component.path), names);
+  structure.components.forEach((component, i) => {
+    assert.equal(component.bodies, 1);
+    assert.equal(component.firstBody, i + 1);
+    assert.equal(component.depth, 0);
+    const color = original.assembly.parts[i].color;
+    assert.ok(component.color && component.color.every((v, k) => Math.abs(v - color[k]) < 1e-3), `${names[i]} keeps its colour`);
+  });
+  for (const [i, name] of names.entries()) {
+    const part = await build({ 'a.scad': `part("p", "swivel.step", component = "${name}");` }, 'a.scad', { 'swivel.step': exported });
+    const mesh = part.preview.meshes[0];
+    const expected = original.preview.meshes[original.preview.partMesh[i]].volume;
+    assert.ok(Math.abs(mesh.volume - expected) <= 0.001 * expected, `${name}: ${mesh.volume} against ${expected}`);
+    assert.equal(mesh.bodies, 1);
+    assert.equal(mesh.quality, 'exact');
+  }
+});
+
+test('an assembly exported with the hinge at 30 degrees lists each component where the hinge put it', async () => {
+  const { bytes } = await hingeStep(30);
+  const model = await build({}, 'hinge.step', { 'hinge.step': bytes });
+  const [base, arm] = model.preview.steps!['hinge.step'].components;
+  assert.deepEqual([base.name, arm.name], ['base', 'arm']);
+  // The base does not move.
+  [0, 0, 0, 40, 20, 10].forEach((v, i) => near(i < 3 ? base.bounds.min[i] : base.bounds.max[i - 3], v, 1e-3));
+  // The arm is 30 x 4 x 4 and turns 30 degrees about the vertical line through (40, 10). By hand, with c = cos 30 = 0.866025 and s = 0.5:
+  // x runs from 40 - 2s = 39 to 40 + 30c + 2s = 66.98076; y from 10 - 2c = 8.26795 to 10 + 30s + 2c = 26.73205; z stays 3 to 7.
+  near(arm.bounds.min[0], 39, 1e-3);
+  near(arm.bounds.max[0], 40 + 30 * Math.cos(Math.PI / 6) + 1, 1e-3);
+  near(arm.bounds.min[1], 10 - 2 * Math.cos(Math.PI / 6), 1e-3);
+  near(arm.bounds.max[1], 10 + 15 + 2 * Math.cos(Math.PI / 6), 1e-3);
+  near(arm.bounds.min[2], 3, 1e-3);
+  near(arm.bounds.max[2], 7, 1e-3);
+});
+
+test('component and body pick one piece of the file, which keeps the position the file gives it', async () => {
+  const { bytes } = await hingeStep(30);
+  const assets = { 'hinge.step': bytes };
+  const arm = await build({ 'a.scad': 'part("p", "hinge.step", component = "arm");' }, 'a.scad', assets);
+  near(arm.preview.meshes[0].volume, 480, 0.01);
+  const second = await build({ 'a.scad': 'part("p", "hinge.step", body = 2);' }, 'a.scad', assets);
+  near(second.preview.meshes[0].volume, 480, 0.01);
+  near(second.preview.meshes[0].bounds.max[0], 40 + 30 * Math.cos(Math.PI / 6) + 1, 1e-3);
+  const first = await build({ 'a.scad': 'part("p", "hinge.step", body = 1);' }, 'a.scad', assets);
+  near(first.preview.meshes[0].volume, 8000, 0.01);
+  // at and rot apply on top of the position in the file.
+  const moved = await build({ 'a.scad': 'part("p", "hinge.step", component = "arm", at = [0, 0, 100]);' }, 'a.scad', assets);
+  const matrices = solvePose(moved.assembly, {});
+  near(worldBox(moved.preview.meshes[0], matrices[0]).min[2], 103, 1e-3);
+  // The whole file is still one part with both bodies.
+  const whole = await build({ 'a.scad': 'part("p", "hinge.step");' }, 'a.scad', assets);
+  near(whole.preview.meshes[0].volume, 8480, 0.01);
+  assert.equal(whole.preview.meshes[0].bodies, 2);
+});
+
+test('a part that names a component or body the file does not have says what the file has', async () => {
+  const { bytes } = await hingeStep(0);
+  const assets = { 'hinge.step': bytes };
+  await assert.rejects(build({ 'a.scad': 'part("p", "hinge.step", component = "plate");' }, 'a.scad', assets),
+    (error: unknown) => error instanceof CadError && error.file === 'a.scad' && error.message === 'part("p"): hinge.step has no component "plate". It has: base, arm.');
+  await assert.rejects(build({ 'a.scad': 'part("p", "hinge.step", body = 3);' }, 'a.scad', assets),
+    (error: unknown) => error instanceof CadError && error.message === 'part("p"): hinge.step has 2 solid bodies. body can be 1 to 2.');
+  await assert.rejects(build({ 'a.scad': 'part("p", "hinge.step", component = "arm", body = 1);' }, 'a.scad', assets),
+    (error: unknown) => error instanceof CadError && error.message === 'part("p"): give component or body, not both.');
+  await assert.rejects(build({ 'a.scad': 'part("p", "hinge.step", body = 0);' }, 'a.scad', assets),
+    (error: unknown) => error instanceof CadError && /body is the number of a solid body/.test(error.message));
+  await assert.rejects(build({ 'a.scad': 'part("p") { cube(5); }\npart("q", "arm.scad", component = "x");', 'arm.scad': 'cube(5);' }, 'a.scad'),
+    (error: unknown) => error instanceof CadError && /component and body pick one part out of a STEP file, and arm.scad is not one/.test(error.message));
+});
+
+test('a file with one part and no structure lists no components, and body still works', async () => {
+  const single = await build({ 'one.scad': 'cube([10, 20, 30]);' }, 'one.scad');
+  const bytes = builder.exportStep(single);
+  const model = await build({}, 'one.step', { 'one.step': bytes });
+  const structure = model.preview.steps!['one.step'];
+  assert.equal(structure.components.length, 0);
+  assert.equal(structure.bodies, 1);
+  const picked = await build({ 'a.scad': 'part("p", "one.step", body = 1);' }, 'a.scad', { 'one.step': bytes });
+  near(picked.preview.meshes[0].volume, 6000, 0.01);
+  await assert.rejects(build({ 'a.scad': 'part("p", "one.step", component = "x");' }, 'a.scad', { 'one.step': bytes }),
+    (error: unknown) => error instanceof CadError && error.message === 'part("p"): one.step has no named components. Use body (only 1) to pick a solid body, or leave component out for the whole file.');
+});
+
+test('a component with components below it is named by its path, and its bodies are numbered in file order', async () => {
+  // The swivel arm's STEP becomes one component, "inner", with four below it, moved 100 mm along x and turned 30 degrees,
+  // so each part below it sits where its own place and its parent's place put it together. A block sits beside it.
+  const arm = await build(swivelArm, 'swivel_arm.scad');
+  const inner = builder.exportStep(arm);
+  const nested = await build({ 'n.scad': 'part("block") { cube([10, 10, 10]); }\npart("inner", "swivel.step", at = [100, 0, 0], rot = [0, 0, 30]);' }, 'n.scad', { 'swivel.step': inner });
+  const bytes = builder.exportStep(nested);
+  const model = await build({}, 'nested.step', { 'nested.step': bytes });
+  const { components, bodies } = model.preview.steps!['nested.step'];
+  assert.equal(bodies, 5);
+  assert.deepEqual(components.map((c) => c.path).slice(0, 2), ['block', 'inner']);
+  const below = components.filter((c) => c.depth === 1);
+  assert.equal(below.length, 4);
+  assert.ok(below.every((c) => c.path.startsWith('inner/')), 'the parts below inner are named by their path');
+  assert.equal(new Set(components.map((c) => c.path)).size, components.length, 'every path is different');
+  const innerRow = components.find((c) => c.path === 'inner')!;
+  assert.equal(innerRow.bodies, 4);
+  assert.equal(innerRow.firstBody, 2);
+  const total = arm.preview.meshes.reduce((sum, mesh) => sum + mesh.volume, 0);
+  const wholeInner = await build({ 'a.scad': 'part("p", "nested.step", component = "inner");' }, 'a.scad', { 'nested.step': bytes });
+  assert.ok(Math.abs(wholeInner.preview.meshes[0].volume - total) <= 0.001 * total);
+  assert.equal(wholeInner.preview.meshes[0].bodies, 4);
+  // The third part of the arm, picked by path, has its volume and sits where the file puts it.
+  const third = below[2];
+  const one = await build({ 'a.scad': `part("p", "nested.step", component = "${third.path}");` }, 'a.scad', { 'nested.step': bytes });
+  const byBody = await build({ 'a.scad': `part("p", "nested.step", body = ${third.firstBody});` }, 'a.scad', { 'nested.step': bytes });
+  near(one.preview.meshes[0].volume, byBody.preview.meshes[0].volume, 0.01);
+  // Picked by path, by body number (the kernel's own placement of every solid) and as listed: the same box.
+  [0, 1, 2].forEach((k) => {
+    near(one.preview.meshes[0].bounds.min[k], byBody.preview.meshes[0].bounds.min[k], 1e-3);
+    near(one.preview.meshes[0].bounds.max[k], byBody.preview.meshes[0].bounds.max[k], 1e-3);
+    near(third.bounds.min[k], byBody.preview.meshes[0].bounds.min[k], 1e-3);
+    near(third.bounds.max[k], byBody.preview.meshes[0].bounds.max[k], 1e-3);
+  });
+  assert.ok(byBody.preview.meshes[0].bounds.min[0] > 50, 'the part moved with its parent, so it is nowhere near the origin');
+});
+
+test('the round trip: export an assembly, open it as two parts with the same hinge, and every pose matches the original', async () => {
+  // Exported with the hinge at 0, the arm sits in the file at (40, 10, 5) and the base where it was.
+  const { model: original, bytes } = await hingeStep(0);
+  const assets = { 'hinge.step': bytes };
+  const reopened = await build({
+    'again.scad': `part("base", "hinge.step", component = "base");
+part("arm", "hinge.step", component = "arm");
+// The arm's solid already sits at the hinge, so the hinge point is the same in both parts.
+joint("h", type = "hinge", parent = "base", child = "arm", at = [40, 10, 5], child_at = [40, 10, 5], axis = [0, 0, 1], limits = [0, 90], value = 0);`,
+  }, 'again.scad', assets);
+  for (const angle of [0, 15, 30, 90]) {
+    const before = solvePose(original.assembly, { h: angle });
+    const after = solvePose(reopened.assembly, { h: angle });
+    for (let i = 0; i < 2; i++) {
+      const a = worldBox(original.preview.meshes[original.preview.partMesh[i]], before[i]);
+      const b = worldBox(reopened.preview.meshes[reopened.preview.partMesh[i]], after[i]);
+      for (let k = 0; k < 3; k++) {
+        near(b.min[k], a.min[k], 1e-4);
+        near(b.max[k], a.max[k], 1e-4);
+      }
+    }
+  }
+  // Hand check at 90 degrees: the arm's far end, 30 mm along its length, is at (40, 40, 5), so its box reaches y = 10 + 30 + 0 = 40 and x from 38 to 42.
+  const turned = worldBox(reopened.preview.meshes[reopened.preview.partMesh[1]], solvePose(reopened.assembly, { h: 90 })[1]);
+  near(turned.max[1], 40, 1e-4);
+  near(turned.min[0], 38, 1e-4);
+  near(turned.max[0], 42, 1e-4);
+});

@@ -1,12 +1,13 @@
-import type { OcctKernel, ShapeHandle } from 'occt-wasm';
-import { partTag, readAssembly, singlePart, solvePose, type AssemblySpec, type Color } from './assembly.ts';
+import type { OcctKernel, ShapeHandle, XCAFDocument } from 'occt-wasm';
+import { partTag, readAssembly, singlePart, solvePose, type AssemblySpec, type Color, type PartSpec } from './assembly.ts';
 import { assetFormat, contentHash, stemOf } from './assets.ts';
 import { childrenText, firstColor, flatRounds, hasShapes, needsCheck, parseCsg, taggedParts, unsupported, type CsgNode } from './csg.ts';
 import { flipTriangles, maxTriangles, meshBounds, meshVolume, parseBinaryStl, parseStl, toBinaryStl, toPartMesh } from './mesh.ts';
-import { CadError, type BuildStage, type MeasurePick, type ModelPreview, type PartMesh, type Pose, type ProjectAssets, type ProjectFiles } from './protocol.ts';
+import { CadError, type BuildStage, type MeasurePick, type ModelPreview, type PartMesh, type Pose, type ProjectAssets, type ProjectFiles, type StepStructure } from './protocol.ts';
 import { measure } from './measure.ts';
 import { evaluateScad, inspectProject, renderMesh, type Evaluation, type LibraryFiles, type LibraryLoader, type OpenScadFactory } from './scad.ts';
 import { buildSolid, meshToSolid, previewSolid, writeAssemblyStep } from './solid.ts';
+import { fileSolids, pickBody, pickComponent, readStructure, SelectionError } from './stepTree.ts';
 
 /** Why a part is faceted when its exact build disagreed with OpenSCAD. It reads after "uses". */
 export const mismatchReason = "an exact build that did not match OpenSCAD's mesh";
@@ -70,6 +71,8 @@ export class ModelBuilder {
   #loadLibrary?: LibraryLoader;
   #buildExact: typeof buildSolid;
   #cache = new Map<string, CachedSolid>();
+  /** What each STEP file holds, by the hash of its bytes. Kept while a build uses the file. */
+  #structures = new Map<string, StepStructure>();
 
   /**
    * `loadLibrary` fetches a library such as BOSL2 when a project includes it. Without one, libraries are unavailable.
@@ -223,44 +226,69 @@ export class ModelBuilder {
     }
   }
 
-  /** The solid of an imported STEP or STL, built once for each distinct content. */
-  async #asset(name: string, bytes: Uint8Array): Promise<{ solid: CachedSolid; fresh: boolean }> {
+  /**
+   * The solid of an imported STEP or STL, built once for each distinct content. A part that names a component or
+   * a body of a STEP file gets that piece, cached on its own. `docs` holds the files read in this build, so a
+   * file that gives several parts is read once.
+   */
+  async #asset(name: string, bytes: Uint8Array, part: PartSpec | undefined, docs: Map<string, XCAFDocument>): Promise<{ solid: CachedSolid; fresh: boolean }> {
     const format = assetFormat(name);
-    const key = `${format}:${await contentHash(bytes)}`;
+    const hash = await contentHash(bytes);
+    const piece = part?.component !== undefined ? `#component=${part.component}` : part?.body !== undefined ? `#body=${part.body}` : '';
+    const key = `${format}:${hash}${piece}`;
     const cached = this.#cache.get(key);
     if (cached) return { solid: cached, fresh: false };
-    const solid = format === 'step' ? this.#importStep(name, bytes) : this.#importStl(name, bytes);
+    const solid = format === 'step' ? this.#importStep(name, bytes, hash, docs, part) : this.#importStl(name, bytes);
     this.#cache.set(key, solid);
     return { solid, fresh: true };
   }
 
-  /** A STEP file as an exact part: its solid bodies, joined as one compound. OpenCascade converts the file's units to millimetres. */
-  #importStep(name: string, bytes: Uint8Array): CachedSolid {
+  /**
+   * A STEP file as an exact part: its solid bodies joined as one compound, or the one component or body that
+   * part() picks. OpenCascade converts the file's units to millimetres. The file is read through an XCAF
+   * document, which gives the solids in file order, their places, and the names and colours of the components.
+   */
+  #importStep(name: string, bytes: Uint8Array, hash: string, docs: Map<string, XCAFDocument>, part?: PartSpec): CachedSolid {
     const kernel = this.#kernel;
     const text = new TextDecoder().decode(bytes);
     if (!/^\s*ISO-10303-21\s*;/.test(text.slice(0, 4096))) {
       throw new CadError(`${name} is not a STEP file: it does not start with ISO-10303-21. It may be another format that was renamed. Export it from the CAD program as STEP (AP203, AP214 or AP242).`, undefined, name);
     }
     try {
-      let bodies = 0;
-      const kept = this.#keep(() => {
-        let imported: ShapeHandle;
+      // The document is opened here, before any checkpoint, because releasing handles must not reach into it.
+      let doc = docs.get(hash);
+      if (!doc) {
         try {
-          imported = kernel.importStep(text);
+          doc = kernel.importXCAFFromSTEP(text);
         } catch {
           throw new CadError(`${name} could not be read as a STEP file. It may be damaged or cut short. Export it again from the CAD program as STEP (AP203, AP214 or AP242).`, undefined, name);
         }
-        const solids = kernel.getSubShapes(imported, 'solid');
-        if (!solids.length) throw new CadError(`${name} has no solid bodies. It may contain only surfaces or curves. Export it again as a solid model.`, undefined, name);
-        const shape = solids.length === 1 ? solids[0] : kernel.makeCompound(solids);
+        docs.set(hash, doc);
+      }
+      if (!this.#structures.has(hash)) this.#structures.set(hash, readStructure(kernel, doc));
+      let bodies = 0;
+      let color: Color | undefined;
+      const kept = this.#keep(() => {
+        let shape: ShapeHandle;
+        if (part?.component !== undefined) {
+          ({ shape, bodies, color } = pickComponent(kernel, doc, name, part.component));
+        } else if (part?.body !== undefined) {
+          ({ shape, bodies, color } = pickBody(kernel, doc, name, part.body));
+        } else {
+          const solids = fileSolids(kernel, doc);
+          if (!solids.length) throw new CadError(`${name} has no solid bodies. It may contain only surfaces or curves. Export it again as a solid model.`, undefined, name);
+          shape = solids.length === 1 ? solids[0] : kernel.makeCompound(solids);
+          bodies = solids.length;
+        }
         const volume = kernel.getVolume(shape);
         if (!Number.isFinite(volume) || volume <= 0) throw new CadError(`${name} has no positive solid volume.`, undefined, name);
-        bodies = solids.length;
         return { shape, volume };
       }, true);
       kept.mesh.bodies = bodies;
+      if (color) kept.color = color;
       return kept;
     } catch (error) {
+      if (error instanceof SelectionError) throw error;
       throw error instanceof CadError && !error.file ? new CadError(error.message, error.line, name) : error;
     }
   }
@@ -291,6 +319,16 @@ export class ModelBuilder {
     // A mesh with open edges still shows and measures, but its volume is not a volume and STEP export will say it cannot sew it.
     const reason = stats.openEdges ? `an imported STL mesh that is not closed (${stats.openEdges.toLocaleString('en-US')} open edges)` : 'an imported STL mesh';
     return { kind: 'faceted', stl: toBinaryStl(soup), mesh: { ...shown, volume, quality: 'faceted', reason } };
+  }
+
+  /** An imported part's solid. A component or body that the file does not have is an error in the part() call. */
+  async #partAsset(part: PartSpec, bytes: Uint8Array, docs: Map<string, XCAFDocument>, entry: string) {
+    try {
+      return await this.#asset(part.file!, bytes, part, docs);
+    } catch (error) {
+      if (error instanceof SelectionError) throw new CadError(`part("${part.name}"): ${error.message}`, undefined, entry);
+      throw error;
+    }
   }
 
   async build(files: ProjectFiles, entry: string, progress: (stage: BuildStage) => void = () => {}, assets: ProjectAssets = {}): Promise<BuiltModel> {
@@ -344,12 +382,15 @@ export class ModelBuilder {
     const entries: CachedSolid[] = [];
     const partMesh: number[] = [];
     let rebuilt = 0;
+    // STEP files read in this build, by content hash, so a file that gives several parts is read once.
+    const docs = new Map<string, XCAFDocument>();
+    try {
     for (const [i, part] of assembly.parts.entries()) {
       const node = inline.get(i);
       const { solid, fresh } = node
         ? await this.#solid(childrenText(main!.csg, node), entry, `part("${part.name}")`, assets)
         : part.file !== undefined && Object.hasOwn(assets, part.file)
-          ? await this.#asset(part.file, assets[part.file])
+          ? await this.#partAsset(part, assets[part.file], docs, entry)
           : await this.#solid(evaluations.get(part.file!)!.csg, part.file!, undefined, assets);
       if (fresh) rebuilt++;
       if (!part.colorGiven && solid.color) part.color = solid.color;
@@ -361,7 +402,22 @@ export class ModelBuilder {
       entries.push(solid);
       partMesh.push(meshIndex.get(solid)!);
     }
+    } finally {
+      for (const doc of docs.values()) doc.close();
+    }
     progress('mesh');
+
+    // What each STEP file used here holds, for the asset panel. Files this build did not use are forgotten.
+    const steps: Record<string, StepStructure> = {};
+    const usedHashes = new Set<string>();
+    for (const part of assembly.parts) {
+      if (part.file === undefined || !Object.hasOwn(assets, part.file) || assetFormat(part.file) !== 'step') continue;
+      const hash = await contentHash(assets[part.file]);
+      usedHashes.add(hash);
+      const structure = this.#structures.get(hash);
+      if (structure) steps[part.file] = structure;
+    }
+    for (const hash of [...this.#structures.keys()]) if (!usedHashes.has(hash)) this.#structures.delete(hash);
 
     // Drop solids this model no longer uses.
     for (const [csg, solid] of this.#cache) {
@@ -374,7 +430,7 @@ export class ModelBuilder {
       name: stemOf(entry),
       assembly,
       entries,
-      preview: { assembly, isAssembly, meshes, partMesh, messages, rebuilt, buildMs: performance.now() - started },
+      preview: { assembly, isAssembly, meshes, partMesh, messages, rebuilt, buildMs: performance.now() - started, steps },
     };
   }
 

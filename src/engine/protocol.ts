@@ -62,6 +62,34 @@ export interface PartMesh {
   bodies?: number;
 }
 
+/** One component of a STEP file's product structure, as the asset panel lists it. */
+export interface StepComponent {
+  /** The names from the top of the file, joined with "/", such as "arm/link". This is what part(component = ...) takes. */
+  path: string;
+  /** The last name in the path. */
+  name: string;
+  /** 0 for a component at the top of the file. */
+  depth: number;
+  /** Solid bodies in this component. */
+  bodies: number;
+  /** Number of its first body, counted from 1 in file order. This is what part(body = ...) takes. */
+  firstBody: number;
+  /** In the file's own frame: where the component sits in the assembly the file holds. */
+  bounds: { min: Vec3; max: Vec3 };
+  /** The component's own colour, or the nearest one above it. */
+  color?: [number, number, number];
+}
+
+/** What a STEP file holds, read once for each distinct content. */
+export interface StepStructure {
+  /** Solid bodies in the whole file. */
+  bodies: number;
+  /** Every component below the top, depth first. Empty when the file holds one part with no structure. */
+  components: StepComponent[];
+  /** Components left out of the list because there are too many. They can still be named in part(). */
+  unlisted: number;
+}
+
 export interface ModelPreview {
   /** The parts and joints. A single part file is an assembly of one part. */
   assembly: AssemblySpec;
@@ -74,6 +102,8 @@ export interface ModelPreview {
   buildMs: number;
   /** Solids rebuilt in this job. The rest came from the cache. */
   rebuilt: number;
+  /** For each STEP file this build used, by file name: what it holds. */
+  steps?: Record<string, StepStructure>;
 }
 
 /** Joint values by joint name: degrees for hinges, millimetres for sliders. */

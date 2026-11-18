@@ -1,4 +1,4 @@
-import { assetNamePattern, stemOf, unreadableFormat } from './assets.ts';
+import { assetFormat, assetNamePattern, stemOf, unreadableFormat } from './assets.ts';
 import { CadError, type Pose, type Vec3 } from './protocol.ts';
 
 /**
@@ -14,8 +14,8 @@ function _ps_n(x) = is_num(x) ? [floor(x), round((x - floor(x)) * 1000000)] : x;
 function _ps_v(v) = is_list(v) ? [for (x = v) _ps_n(x)] : v;
 function _ps_t(t) = is_list(t) ? [for (row = t) _ps_v(row)] : t;
 function _ps_hash(s, i = 0, a = 7) = i >= len(s) ? a : _ps_hash(s, i + 1, (a * 31 + ord(s[i])) % 99991);
-module part(name = undef, file = undef, at = [0, 0, 0], rot = [0, 0, 0], color = undef) {
-    echo(["@partscript", "part", name, file, _ps_v(at), _ps_v(rot), _ps_v(color), $children]);
+module part(name = undef, file = undef, at = [0, 0, 0], rot = [0, 0, 0], color = undef, component = undef, body = undef) {
+    echo(["@partscript", "part", name, file, _ps_v(at), _ps_v(rot), _ps_v(color), $children, component, body]);
     if ($children > 0) render(convexity = 900000 + _ps_hash(is_string(name) ? name : "")) children();
 }
 module joint(name = undef, type = "fixed", parent = undef, child = undef, at = [0, 0, 0], rot = [0, 0, 0], axis = [0, 0, 1], limits = undef, value = undef, child_at = [0, 0, 0], child_rot = [0, 0, 0], follow = undef, ratio = undef, offset = undef, table = undef) {
@@ -54,6 +54,10 @@ export interface PartSpec {
   color: Color;
   /** True when part() was given a color. Otherwise the first color() in the shapes is used, if there is one. */
   colorGiven: boolean;
+  /** For a STEP file: the one component of its structure this part is, as a path such as "arm/link". Absent for the whole file. */
+  component?: string;
+  /** For a STEP file: the one solid body this part is, counted from 1 in file order. Absent for the whole file. */
+  body?: number;
 }
 
 export interface JointSpec {
@@ -227,6 +231,23 @@ function readFollow(name: Value, ratio: Value, offset: Value, table: Value, what
   return result;
 }
 
+/** The component or body that part() picks out of a STEP file. Neither means the whole file. */
+function readSelection(component: Value | undefined, body: Value | undefined, what: string, file: string | undefined): { component?: string; body?: number } {
+  const hasComponent = component !== undefined && component !== null;
+  const hasBody = body !== undefined && body !== null;
+  if (!hasComponent && !hasBody) return {};
+  if (hasComponent && hasBody) fail(what, 'give component or body, not both.');
+  if (file === undefined || assetFormat(file) !== 'step') {
+    fail(what, `component and body pick one part out of a STEP file${file === undefined ? ', and this part has no file' : `, and ${file} is not one`}. Leave them out.`);
+  }
+  if (hasComponent) {
+    if (typeof component !== 'string' || component.trim() === '') fail(what, 'component is the name of a component in the STEP file, in quotes, such as component = "faceplate".');
+    return { component: component as string };
+  }
+  if (typeof body !== 'number' || !Number.isInteger(body) || body < 1) fail(what, 'body is the number of a solid body in the STEP file, counted from 1, such as body = 2.');
+  return { body: body as number };
+}
+
 /** Turn the records printed by part() and joint() into a checked assembly. */
 export function readAssembly(records: string[]): AssemblySpec {
   const parts: PartSpec[] = [];
@@ -260,7 +281,8 @@ export function readAssembly(records: string[]): AssemblySpec {
       const at = vector(fields[4], what, 'at') as Vec3;
       const rot = vector(fields[5], what, 'rot') as Vec3;
       if (at.some((v) => v !== 0) || rot.some((v) => v !== 0)) placed.add(name);
-      parts.push({ name, file, inline: file === undefined, at, rot, color: color(fields[6], what, parts.length), colorGiven: fields[6] !== null });
+      const selection = readSelection(fields[8], fields[9], what, file);
+      parts.push({ name, file, inline: file === undefined, at, rot, color: color(fields[6], what, parts.length), colorGiven: fields[6] !== null, ...selection });
       if (parts.length > maxParts) throw new CadError(`An assembly can hold ${maxParts} parts.`);
     } else if (fields[1] === 'joint') {
       const what = typeof fields[2] === 'string' && fields[2] ? `joint("${fields[2]}")` : `joint() number ${joints.length + 1}`;

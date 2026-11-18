@@ -90,7 +90,7 @@ linear_extrude(height = 5)
 A **part** is one rigid piece of an assembly. A file that calls `part()` is an assembly: it lists the pieces and, with `joint()`, how they connect. Everything in the file must then belong to a part.
 
 ```text
-part(name, file, at, rot, color)
+part(name, file, at, rot, color, component, body)
 ```
 
 | Argument | Meaning | Default |
@@ -99,7 +99,9 @@ part(name, file, at, rot, color)
 | `file` | The file that draws the part, in quotes: a project file such as `"arm.scad"`, or an imported file such as `"motor.step"` or `"bracket.stl"`. Leave it out when the shapes are written in braces. | None |
 | `at` | Where the part's origin sits in the world, in mm. Only for a part that no joint carries. | `[0, 0, 0]` |
 | `rot` | How the part is turned in the world, in degrees, in the order of `translate(at) rotate(rot)`. Only for a part that no joint carries. | `[0, 0, 0]` |
-| `color` | `[r, g, b]` with each value from 0 to 1, or a string such as `"#c89d59"`. | The first `color()` inside the part, otherwise a colour from a built-in palette. |
+| `color` | `[r, g, b]` with each value from 0 to 1, or a string such as `"#c89d59"`. | The first `color()` inside the part. For a `component` or `body` of a STEP file, the colour the file gives it. Otherwise a colour from a built-in palette. |
+| `component` | For a STEP `file`: the name of one part of the assembly inside it, in quotes. A part nested inside another is named by its path, such as `"arm/link"`. | None, which takes the whole file |
+| `body` | For a STEP `file`: the number of one solid body in it, counting from 1 in the order the file lists them. The asset's tab shows each part's numbers. | None, which takes the whole file |
 
 **A part written in place.** Put its shapes in braces after `part()`:
 
@@ -124,6 +126,7 @@ The second block is the file `arm.scad`. Here `right` is the same arm moved 60 m
 **Rules.**
 
 - Give `part()` a file or braces, not both.
+- Give `component` or `body`, not both, and only with a STEP file (section 7).
 - Do not wrap a `part()` call in `translate()` or another operation. Put the move inside the braces, or use `at` and `rot`.
 - A part that a joint carries is placed by the joint. Do not also give it `at` or `rot` (section 4).
 - A shape drawn outside every `part()` is an error once the file declares parts:
@@ -402,7 +405,7 @@ The library is about 1.2 MB and downloads the first time a project includes it d
 
 **Open a file.** Press **Open** and choose a `.step`, `.stp` or `.stl` file, such as a motor or a bearing from GrabCAD or a supplier. It becomes a tab, kept exactly as it was opened. The tab shows the file's size and, after a build, how many solid bodies it holds and how big it is.
 
-**Look at it.** **Show on its own** builds the file by itself, so you can look at it and measure it. **Copy the part line** copies the `part()` line for it.
+**Look at it.** **Show on its own** builds the file by itself, so you can look at it and measure it. **Copy the part line** copies the `part()` line for it. A STEP that holds an assembly also lists its parts, each with its own buttons (see "An assembly in one STEP file" below).
 
 **Use it in an assembly.** Write a `part()` line with the file's name and connect it with a joint like any other part:
 
@@ -425,12 +428,50 @@ part("m"): motor.step is not in this project.
 **What to know.**
 
 - **The file name.** An imported file keeps its name, and the name must use letters, digits, `_`, `.` and `-`. A space or a bracket is refused, so a download called `NEMA 17 (1).step` has to be renamed with the pencil on its tab. The extension is lower case.
-- **STEP.** A STEP keeps its true curves, so it exports as it came, and its faces, edges and holes can be measured. Its units are converted to millimetres. The bodies in the file are joined into one rigid part: names, colours and positions inside the file are dropped. The part takes its colour from `color` on `part()`, or from the palette.
+- **STEP.** A STEP keeps its true curves, so it exports as it came, and its faces, edges and holes can be measured. Its units are converted to millimetres. A `part()` line with only the file's name joins every body in the file into one rigid part, each body where the file puts it, with its colour from `color` or the palette. To take the parts of an assembly one by one, use `component` or `body`.
 - **STL.** An STL is a mesh with no units, read as millimetres. It exports with flat faces, so an STL part is always faceted. A mesh with holes in its surface still shows, but its volume is not exact and the STEP export may fail.
 - **Inside a `.scad` file.** `import("bracket.stl");` reads an STL of the project by name.
 - **Formats that cannot be read.** Files in a CAD program's own format (`.sldprt`, `.ipt`, `.f3d`, `.x_t`) and IGES files cannot be read. Download or export the STEP version, which most models include.
 - **Size.** One file can be up to 40 MB and a project up to 120 MB of them. A STEP takes about a second a megabyte to read. A part with thousands of faces is previewed with coarser curves to stay quick. The STEP export is not affected.
 - **Saving.** **Save project** includes the imported files, and **Open** reads that zip back. Imported files also stay in the browser's draft between visits.
+
+### An assembly in one STEP file
+
+A STEP can hold a whole assembly: a robot arm from a supplier, or an assembly that this page exported. Open it and the tab lists what is inside, one row for each part, with its colour, its size and its body numbers. The row's eye button builds that part alone, and its copy button copies a `part()` line for it.
+
+Name a part with `component`. The example below is a fixture that was exported with two parts, `plate` and `post`:
+
+```scad assembly
+part("plate", "fixture.step", component = "plate");
+part("post", "fixture.step", component = "post");
+```
+
+Each part keeps the place the file gives it, so the two lines above rebuild the fixture as it was saved. A part also takes the colour the file gives it, unless you write `color`. Then `at` and `rot` move it from there. A `component` that is not in the file lists the ones that are:
+
+```scad assembly error
+part("p", "fixture.step", component = "lid");
+```
+
+```text
+part("p"): fixture.step has no component "lid". It has: plate, post.
+```
+
+A file from another program may name its parts "1" to "9", or not name them at all. Then pick a solid with `body`. The tab shows the body numbers of each part, and `body = 2` is the second solid in the file:
+
+```scad assembly
+part("post", "fixture.step", body = 2);
+```
+
+A part inside another part is named by its path. If `fixture.step` held a part `post` that has a part `cap`, it is `component = "post/cap"`.
+
+**Joints are not in a STEP file.** The file gives each part its place, but not how the parts move, so write the joints yourself. The solid of a part is drawn at its place in the file, not at its own origin, so give `child_at` as the same point in the file's coordinates. Export an assembly with every joint at its zero if you want to articulate it again.
+
+```scad assembly
+part("plate", "fixture.step", component = "plate");
+part("post", "fixture.step", component = "post");
+joint("spin", type = "hinge", parent = "plate", child = "post",
+      at = [30, 20, 6], child_at = [30, 20, 6], axis = [0, 0, 1], value = 45);
+```
 
 ## 8. Measure
 
@@ -717,6 +758,9 @@ part("name") shape;
 part("name", color = "#c0604c") { shapes }
 part("name", "file.scad", at = [x, y, z], rot = [a, b, c], color = ...);
 part("name", "motor.step");   part("name", "bracket.stl");
+part("name", "robot.step", component = "arm");   // one part of an assembly STEP
+part("name", "robot.step", component = "arm/link");   // nested: its path
+part("name", "robot.step", body = 2);   // the second solid in the file
 ```
 
 **Joints.**

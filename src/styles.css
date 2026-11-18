@@ -175,6 +175,15 @@ h1, h2, p { margin: 0; }
 .asset-note code, .asset-line code { padding: 1px 5px; border-radius: 4px; background: #eeece3; font: 11.5px var(--mono); }
 .asset-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .asset-actions .button { border: 1px solid #d9d5c8; }
+.asset-parts h3 { margin: 4px 0 6px; font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: 0.04em; color: #77786f; }
+.asset-parts ul { margin: 0 0 8px; padding: 0; list-style: none; max-height: 300px; overflow-y: auto; border: 1px solid #e6e3d8; border-radius: 7px; background: #fbfaf5; scrollbar-width: thin; }
+.asset-parts li { display: flex; align-items: center; gap: 8px; padding: 5px 6px 5px 8px; border-bottom: 1px solid #eeece3; }
+.asset-parts li:last-child { border-bottom: 0; }
+.asset-swatch { flex: none; width: 12px; height: 12px; border-radius: 3px; border: 1px solid #cfcab8; }
+.asset-part-text { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.asset-part-text strong { font: 600 12px var(--mono); overflow-wrap: anywhere; }
+.asset-part-text span { color: #6b6f67; font: 10.5px var(--mono); overflow-wrap: anywhere; }
+.asset-parts li .button { flex: none; width: 30px; min-width: 0; padding: 0; justify-content: center; border: 1px solid #d9d5c8; }
 .asset-line { margin: 0; padding-bottom: 3px; overflow-x: auto; }
 .asset-line code { display: inline-block; line-height: 1.8; }
 .editor-meter { display: flex; justify-content: space-between; align-items: center; padding: 0 14px; border-top: 1px solid #eeece3; color: #66675e; font: 10.5px var(--mono); }
@@ -340,6 +349,7 @@ h1, h2, p { margin: 0; }
   .app-actions { gap: 4px; }
   .button { min-height: 44px; gap: 6px; padding: 0 10px; font-size: 13px; }
   .button-run { min-width: 44px; }
+  .asset-parts li .button { width: 44px; }
 
   .more-menu { display: block; position: relative; order: 1; }
   .more-button { display: inline-flex; width: 44px; padding: 0; }

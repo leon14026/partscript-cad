@@ -130,7 +130,7 @@ test('the limits table matches the numbers in the code', () => {
 // The code blocks. A block marked `scad` is built, `scad error` must fail with the message in the block after it, and `scad says`
 // must give the build output in the block after it. Blocks with the same project=name are the files of one project: file=name.scad
 // says which file a block is (design.scad when it does not), and `entry` marks the file that is built (the first one otherwise).
-// `assets` adds a motor.step and a bracket.stl to the project. `same-as=name` makes the block equal an example of the site.
+// `assets` adds a motor.step and a bracket.stl to the project, and `assembly` also adds fixture.step, an exported assembly. `same-as=name` makes the block equal an example of the site.
 const scad = blocks.filter((block) => block.language === 'scad');
 
 test('the manual has examples of each kind', () => {
@@ -145,6 +145,9 @@ async function assetsOf(): Promise<ProjectAssets> {
   return { 'motor.step': builder.exportStep(motor), 'bracket.stl': await renderMesh(csg, openScad) };
 }
 const assets = await assetsOf();
+// `assembly` adds fixture.step, a plate 60 x 40 x 6 and a post (a 8 mm cylinder, 20 mm tall) exported as two parts.
+const fixture = await builder.build({ 'f.scad': 'part("plate", color = "#8d99a6") cube([60, 40, 6]);\npart("post", color = "#c0604c") { translate([30, 20, 6]) cylinder(h = 20, d = 8); }' }, 'f.scad');
+const assemblyAssets: ProjectAssets = { ...assets, 'fixture.step': builder.exportStep(fixture) };
 
 /** The files of the project that a block belongs to, and which file is built. */
 function projectOf(block: CodeBlock) {
@@ -164,7 +167,7 @@ for (const block of scad) {
   const next = blocks[blocks.indexOf(block) + 1];
   const label = `manual line ${block.line}: ${block.code.split('\n').find((line) => line.trim() && !line.startsWith('//'))?.trim().slice(0, 60)}`;
   const { files, entry } = projectOf(block);
-  const used = block.attributes.has('assets') ? assets : {};
+  const used = block.attributes.has('assembly') ? assemblyAssets : block.attributes.has('assets') ? assets : {};
   // Only the block that closes a project builds it.
   const name = block.attributes.get('project');
   const last = typeof name !== 'string' || scad.filter((other) => other.attributes.get('project') === name).at(-1) === block;

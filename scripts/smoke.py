@@ -258,6 +258,28 @@ with sync_playwright() as p:
         page.keyboard.press('Escape')
         page.keyboard.press('Escape')
 
+        # An exported assembly lists its parts in the tab. One of them can be shown alone, and its part line is one click away.
+        rows = page.locator('.asset-parts li')
+        if rows.count() != 4:
+            problems.append(f'{name}: the tab of an exported assembly should list its 4 parts: {rows.count()}')
+        else:
+            first = rows.nth(0).locator('.asset-part-text strong').inner_text()
+            rows.nth(1).locator('button').first.click()
+            notice = wait_built()
+            panel = page.inner_text('.asset-panel').replace('\n', ' ')
+            if page.locator('.output-message.error').count() or 'used parts of this file' not in panel:
+                problems.append(f'{name}: showing one component alone: {notice} / {panel[:200]}')
+            if page.locator('.asset-parts li').count() != 4:
+                problems.append(f'{name}: the list should stay after showing one component alone')
+            rows.nth(0).locator('button').nth(1).click()
+            page.wait_for_timeout(300)
+            if first == rows.nth(1).locator('.asset-part-text strong').inner_text():
+                problems.append(f'{name}: the first two rows of the list have the same name: {first}')
+            page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}import-components.png"))
+            print(f'import: component alone: {notice}')
+            page.click('.asset-actions button:has-text("Show on its own")')
+            wait_built()
+
         # Both files as parts of the assembly, joined by a hinge. The second run reuses both solids.
         page.locator('.file-tab-name', has_text='swivel_arm.scad').click()
         page.click('.cm-content')
