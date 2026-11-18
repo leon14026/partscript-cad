@@ -1,6 +1,6 @@
 # Partscript CAD: build plan
 
-Written 16 November 2026 for whoever continues this project, human or model. It covers twelve phases. Phases 9, 8 and 10 are done (the owner's order of 17 November 2026: 9, then 8, then 10). Phase 8 was tested on the owner's iPhone on 18 November 2026, and Phase 10 is built and checked but not yet tried by the owner. Phases 11 (collision detection) and 12 (drawings) were added on 18 November 2026 and are proposals that are not placed in an order yet.
+Written 16 November 2026 for whoever continues this project, human or model. It covers thirteen phases. Phases 9, 8 and 10 are done (the owner's order of 17 November 2026: 9, then 8, then 10). Phase 8 was tested on the owner's iPhone on 18 November 2026, and Phase 10 is built and checked but not yet tried by the owner. Phases 11 (collision detection) and 12 (drawings) were added on 18 November 2026 and are proposals that are not placed in an order yet. Phase 13 (Partscript as an MCP server for Claude and ChatGPT) was added the same day as an optional proposal.
 
 1. Any OpenSCAD geometry builds (faceted fallback)
 2. Many parts from one file (inline parts)
@@ -11,9 +11,10 @@ Written 16 November 2026 for whoever continues this project, human or model. It 
 7. Measure tool
 8. Phone viewer mode (done, tested on the owner's iPhone 18 November 2026)
 9. User manual: how to use the site and how the syntax works (done)
-10. Open an assembly STEP as separate parts (proposed, not started)
-11. Collision detection, in a pose and while a joint moves (proposed, not started)
+10. Open an assembly STEP as separate parts (built and pushed 18 November 2026; the owner's tests are still to do)
+11. Collision detection, in a pose and while a joint moves (built and pushed 18 November 2026; the owner's tests are still to do)
 12. Drawings: export each part as a dimensioned sheet (proposed, not started)
+13. Partscript as an MCP server for Claude and ChatGPT (optional, proposed, not started)
 
 Phases 1 and 2 come first, in that order. After them, phases 3 to 7 are independent and can be done in any order. Each phase ends in a working, tested, releasable site.
 
@@ -67,6 +68,8 @@ Phases 1 and 2 come first, in that order. After them, phases 3 to 7 are independ
   - **Tests.** `test/collision.test.ts` (16), `test/manual.test.ts` (a new section title list and a signature and numbers test), and `scripts/smoke.py` (`check_collisions`: the red tint, the card with 500 mm³, Reset, Check motion and a click on its line, Stop at collision typed and played, `allow_overlap`), run in both modes.
   - **Not done:** the owner's tests on his own machine, and what the v3 overlaps are (F41).
 - **Phase 12, drawings, was added to the plan (18 November 2026).** Nothing is built. The owner asked for parts to be exported as drawings automatically, as his `scad2drawing` repository did, and said the plan need not follow it. I read that repository (it is glue around two Python tools in two Colab environments; its own notes say why it was fragile) and probed the kernel (F33 to F36). What decided the design: hidden-line removal takes 15 to 200 ms a view, even on the NEMA 17 STEP; a circle stays a circle only when seen square-on, and a `$fn` hole is only straight lines, so hole sizes are read from the solid's cylinder faces, not from the projected edges; a section is a cut of the solid whose cut faces are hatched; and a faceted part with curved faces draws every facet unless the preview's 28 degree crease rule is applied. The plan draws from the exact solid with no STEP round trip, writes SVG, PDF and DXF from one description, and does not invent tolerances. The owner's reference drawing is step 1's first ask.
+- **Phase 13, Partscript as an MCP server, was added to the plan as optional (18 November 2026).** Nothing is built and nothing is measured. The owner asked whether it could be a connector in Claude and a plugin in ChatGPT. Both are a remote MCP server at an HTTPS address (ChatGPT's name for them keeps moving: connectors, then apps, and "Plugins" in some menus; the 2023 plugin system is gone), so one server serves both, and the engine already runs in Node, which the tests prove. The catch is hosting: `CLAUDE.md` says "Static site, no backend", and this phase is the first that needs one, so the owner decides where it runs, who may use it and which ChatGPT plan he has before step 2. What was read about each product comes from search results, with the sources named in the phase, and the ChatGPT plan rules disagree between sources. Step 1 re-reads and measures.
+- **Two requests while the owner was testing phases 10 and 11 (18 November 2026), built and not committed.** The owner said he had started testing, that it seemed to be going well, and that no acceptance step is to be marked as passed until he has done it properly; none is marked. (1) **A switch for collision detection.** A **Collisions** button in the preview toolbar (shown for a model with two or more parts, on by default, kept in the browser under `partscript.collisions`) turns the whole check off. Off means `Viewport.tsx` builds no `CollisionChecker`, so there is no live check, no red, no card, no exact confirmation, and `Check motion` and `Stop at collision` are hidden; turning it off also stops a motion check that is running. The code does not hold the setting and `allow_overlap` does not change it. (2) **Add a `.scad` file without replacing anything.** What happened: **Open** joins a `.scad` file to the project, but a single `.scad` file replaces a project that has only one file (`replaceDocument`), so adding to a one-file project replaced it. Open keeps that behaviour (it is what a first-time user expects). A new file button beside the **+** on the tabs adds `.scad`, `.step`, `.stp` and `.stl` files and never replaces: `addFiles` in `src/project.ts` gives a name that is taken the next free number (`arm.scad` becomes `arm_2.scad`) and the page says so; a `.zip` or `.json` project is refused with a message that points to Open. The new file opens as the active tab, so the notice says that Run builds the open file unless one is pinned. `test/addfile.test.ts` (6 tests) and the smoke test cover it, 217 tests in all. The smoke test now names the Open input, because the page has two file inputs.
 - **Phase 7: done and live since 17 November 2026 (commit `df6cb0a`, with phase 6).** Differences from the text of the phase below, so later work reads true:
   - New files `src/engine/measure.ts` (`measure(kernel, parts, picks)`: reads an exact part from its placed sub-shapes and a faceted part from its mesh; types `MeasurePick`, `Reading` and `MeasureResult` live in `protocol.ts`) and `src/picking.ts` (page side: `pickAt`, `castRay`, a bounding volume hierarchy per part, `toScreen`, `viewRay`; pure, so Node tests drive it). `PartMesh` gained `faceOf` (face or region per triangle), `edgeOf` (edge per line segment, empty for a faceted part) and `corners` (x, y, z of each corner). `ModelBuilder.measure(model, pose, picks)` wraps the call in `checkpoint` / `releaseSince`; the worker answers a `measure` command and the client has `measure(revision, pose, picks)`. `App.measurePicks` refuses while a build or an export runs, and a stale preview can still be measured, because the worker keeps the last build.
   - **Expectations in the text below that turned out wrong (rule 10):** `faceGroups` are `[first index, number of indices, hash]` (three indices to a triangle), not `[triStart, triCount, faceHash]`. The plan sent faceted parts to the page; they are measured in the worker from the stored mesh, so one code path serves both kinds and the page only picks. A plane's `normal` ignores which way the face looks (the kernel's own note), so an upward face cannot be told from a downward one by it; angles are therefore reported between planes or axes, 0 to 90 degrees (`Angle`), and a test picks the top face by its height. The kernel has no closest-point call (`distanceBetween` returns a number), so there is no "line between the two closest points": the line is drawn where the distance reading has its own geometry (corner to corner; parallel faces, from the picked face's centre; parallel axes, centre to centre; axis to a parallel face; a corner to a face or an edge, only when its projection gives the kernel's shortest distance). Any other pair has the number and no line.
@@ -1120,9 +1123,90 @@ Every expected number is worked by hand.
 
 ---
 
+## Phase 13. Partscript as an MCP server for Claude and ChatGPT (optional, proposed, not started)
+
+Asked by the owner on 18 November 2026: "as part of an additional phase, is it possible to make it a connector in Claude and plugin in chatgpt". He asked for it to be listed as **optional**. Nothing else waits for it, and rule 1 and the backlog's rule apply: it is not started without his go-ahead. The status note at the top says what was built and where it differs from the text below. The sections that follow are the plan as it was written.
+
+### A decision the owner has to make first (rule 10)
+
+`CLAUDE.md` says "Static site, no backend". Every other phase kept that. This one cannot, because both products call a server over the internet, and GitHub Pages cannot run one. What stays true: the site stays static, and the server is a separate deployment built from a separate folder. What changes: the commit that adds the server also rewrites that line of `CLAUDE.md` and says so in the README. The owner decides three things before step 2:
+
+1. **Where it runs and who pays.** Step 1 prices the candidates (a small container service, a small virtual machine, or his own computer behind a tunnel) and measures what the engine needs.
+2. **Who may use it.** Only him (a secret in a header or a sign-in) or anyone with the link. A public endpoint that runs submitted OpenSCAD needs limits whatever the answer is.
+3. **His ChatGPT plan.** See the next section: what a plan allows is not settled.
+
+### What was read (18 November 2026, from search results and not measured)
+
+- **Claude.** A custom connector is the URL of a remote MCP server. Claude calls it from Anthropic's cloud, not from the user's computer, so the server must be reachable from the public internet. It is available on Free (one connector), Pro, Max, Team and Enterprise. The local alternative is a desktop extension (an MCPB file) that runs on the owner's computer and works in Claude Desktop only. A server set up in `claude_desktop_config.json` is not available in claude.ai. A custom connector may send up to four custom headers, and Anthropic reviews each header name. Sources: https://support.claude.com/en/articles/11175166 and https://claude.com/docs/connectors/custom/remote-mcp. Claude's documentation also says that most partners ship a remote server and a plugin that wraps it with skills (https://claude.com/docs/connectors/overview).
+- **ChatGPT.** The old plugin idea is gone. The name moves (connectors, then apps, and some menus now say Plugins), but the thing is a remote MCP server at an HTTPS address, added in Developer mode. OpenAI's help page says apps, full MCP support and Developer mode are available for Business and Enterprise/Edu on web (https://help.openai.com/en/articles/12584461). One third-party guide says Plus and Pro get Developer mode for read-only connectors (https://help.boomi.com/docs/Atomsphere/Platform/Connect_chatgpt_setup). Two third-party pages say there is no stdio (a local server reaches ChatGPT only through a tunnel that is limited to enterprise) and that apps are web only, with agent mode not using custom apps (https://zuplo.com/learn/mcp/compatibility/clients/chatgpt-connectors.md and https://coworker.ai/blog/chatgpt-mcp). **Step 1 re-reads OpenAI's page and checks it against the owner's plan**, because the sources disagree and the rules change often.
+- **MCP Apps.** The first official MCP extension (26 January 2026, SEP-1865) lets a tool return an interactive page, a `ui://` resource shown in a sandboxed frame in the chat. Claude and ChatGPT both support it, and it was co-developed by Anthropic and OpenAI (https://workos.com/blog/2026-01-27-mcp-apps and https://www.thoughtworks.com/radar/platforms/mcp-apps).
+
+### What is true today (18 November 2026)
+
+- **The engine already runs outside the browser.** `ModelBuilder` (`src/engine/build.ts`) has `build`, `measure`, `collide` and `exportStep`. The tests run it in Node with both WASM engines, and `test/libraries.ts` reads the BOSL2 zips from `public/`, so a server needs no browser API to build. `src/collision.ts` (`CollisionChecker`, `sweepJoint`, `clearMove`) is pure and ran in Node in the Phase 11 probes (F40).
+- **One piece lives in the page.** The exact confirmation of Check motion (the poses sent to `collide` in chunks of 12 under a 45 s budget) is in `checkMotion` in `src/components/Viewport.tsx`, not in a shared module. The build summary and messages come from `src/engine/summary.ts` and `ModelPreview.messages`, which the page and a server can both use.
+- **Sizes that matter.** The OpenSCAD files in `public/engines/openscad/` are about 9 MB on disk and `node_modules/occt-wasm` is 22 MB. A crank sweep of the v3 machine took 28 s (F40). A STEP of the v3 machine was 48 MiB after Phase 5's first follow-up, far too big to return in a tool result.
+- Nothing in the repository serves HTTP, signs anyone in or uses the MCP SDK, and there is no dependency for it.
+- **Not measured:** the memory one build needs in Node, a cold start, how many builds a small host runs at once, how large a tool result each host accepts, and which sign-in each host accepts for a private server.
+
+### Design (intent, not measured)
+
+- **One server for both products.** A remote MCP server over HTTPS (the streamable HTTP transport) named Partscript. Claude and ChatGPT add the same URL. The only client-specific code is the optional viewer in the last step.
+- **Where the code goes.** A new folder `server/`, outside `src/` and outside the site build, so `npm run build` makes the same `dist/` as today. It imports `src/engine/*` and `src/collision.ts`, so there is one engine and the answers match the page. Its one new dependency is the MCP SDK (`@modelcontextprotocol/sdk`), named here for rule 8, and it is not loaded by the site.
+- **Tools.** Each call is stateless: the caller sends the project's `.scad` text and gets text back. Tools do not change anything outside the call, so they are marked read-only. Step 1 checks whether a Plus or Pro account can use read-only tools if its plan does not allow the rest.
+  1. `build_assembly(files, entry)`: the parts and joints, each part's volume and whether it is exact or faceted, and the build messages in the page's own words.
+  2. `check_collisions(files, entry, pose)`: the pairs that overlap and the volume of each, from `collide`.
+  3. `check_motion(files, entry, joint)`: the stretches of travel where parts overlap, in the words of the page's card. This needs the exact-confirmation code moved out of `Viewport.tsx` first (step 2).
+  4. `measure(files, entry, pose, picks)`: the distance, angle or size, from `measure`.
+  5. `export_step(files, entry, pose)`: a short-lived download link, with the size and the part list. A model under a size limit that step 1 sets may come back as an embedded file.
+- **Not in the tools:** imported STEP and STL files. A model cannot send megabytes through a tool call, so a project with an imported file answers in the build-message style that it needs the site.
+- **Limits.** A time limit for each call, a cap on the size of the text sent, and one build at a time for each process. A call that goes over says so in plain words, with what to change, and the next call works. The page's 60 s job rule is the starting point.
+- **Sign-in.** Decided in step 1 from what each host accepts: a header with a secret for Claude, and for ChatGPT possibly OAuth or no sign-in. No accounts and no billing.
+- **Three stages.** (A) The server on the owner's computer over stdio, as a Claude Desktop extension: no hosting, Claude Desktop only, and it proves the tools. (B) The same server hosted at an HTTPS address, which both products need. (C) Optional: a `ui://` page that draws the model in the chat with the same `createViewer` as the site (`src/components/viewer.ts`), with the collision tint from `setCollisions`. The mesh in a tool result must stay small, so step 1 sets a limit.
+- **The site.** No change in how it works. README, the Help dialog and the manual get a short section on using Partscript from Claude or ChatGPT (rule 9), so `test/manual.test.ts` changes too.
+
+### Steps
+
+1. **Read and measure, no code in `src/`.** Re-read both products' documents and ask which plan the owner has. In a plain Node process time one build, one `collide` and one `exportStep`, with the memory used, on the v3 machine and on a small model. Find the largest tool result each host takes, the sign-in each accepts, and the cost of the hosting candidates. Record the numbers in section 2 under the next free F numbers, and stop and tell the owner if a fact above is wrong (rule 10).
+2. Move the exact-confirmation chunks out of `Viewport.tsx` into a pure module that the page and the server share. The page behaves as before: tests and the smoke test in both modes.
+3. `server/` over stdio with tools 1 to 4 and the tests below.
+4. `export_step`, the limits and the messages for a call that goes over.
+5. The Claude Desktop extension for stage A. The owner tries it.
+6. The hosted server, its sign-in and its URL. The owner adds it to Claude and to ChatGPT.
+7. Optional: the viewer page (stage C).
+8. README, Help, manual and `CLAUDE.md` in the same commit (rule 9).
+
+### Tests (`test/server.test.ts`, new)
+
+Every expected number is worked by hand, and most are the numbers of `test/collision.test.ts`. The tools are called through the SDK's in-memory client and server, so tool names and schemas are tested as well as the code.
+
+- `build_assembly` on `part("a") cube(10);` gives one part of 1000 mm³, exact.
+- `check_collisions` on two 10 mm cubes with the second at x = 8 reports one overlap of 200 mm³. Cubes that touch on a face report none.
+- `check_motion` on the hinge of F30 (a 20 by 2 by 5 bar swinging into a wall) says the overlap starts at 27.0963° within 0.01°, and the volume at 28.0963° is 0.5461 mm³. The slider of the Phase 11 tests starts at 15 mm and gives 500 mm³ at 30.
+- A project with an error gives the same message, file and line as `ModelBuilder.build` gives the page, compared as strings.
+- A call over the time limit answers in plain words and the next call succeeds. A project with an imported file answers that it needs the site.
+- The same input twice gives the same answer.
+
+### Acceptance
+
+- [ ] The owner has decided where it runs, who may use it and which ChatGPT plan he has.
+- [ ] In Claude Desktop (stage A), Claude builds the hinge snippet above and reports a first contact near 27.10° and about 0.546 mm³ at 28.0963°.
+- [ ] Hosted (stage B): the owner adds the URL to Claude and to ChatGPT, both list the tools, and both give the same numbers.
+- [ ] A project with an error and a call that runs too long both answer in plain words, and the server stays up.
+- [ ] `npm run build` makes the same site as before, with no server code in `dist/`.
+- [ ] Optional: the viewer shows the model in both products.
+- [ ] README, Help, the manual and `CLAUDE.md` are updated, and `test/manual.test.ts` passes.
+- [ ] Tests pass and `scripts/smoke.py` passes in both modes.
+
+**Defaults chosen, which the owner may change:** stateless tools, `.scad` text only, read-only tools, stage A before stage B, one server for both products, no accounts.
+
+**Out of scope:** imported STEP and STL files through the tools, editing the owner's files in place, accounts and billing, a Claude plugin of skills beside the server (Claude's documents say partners often ship one, so it can come later), a listing in either product's directory, ChatGPT on a phone and ChatGPT's agent mode (a third-party page says custom apps do not work there).
+
+---
+
 ## Backlog
 
-Work that is wanted or noted but not scheduled. **Nothing here is started, and nothing here is started without the owner's go-ahead.** The owner has not ranked these (18 November 2026), so the groups are by kind, not by priority. The three planned phases are not in this list: Phase 10 (open an assembly STEP as separate parts), Phase 11 (collision detection) and Phase 12 (drawings) have their own sections above.
+Work that is wanted or noted but not scheduled. **Nothing here is started, and nothing here is started without the owner's go-ahead.** The owner has not ranked these (18 November 2026), so the groups are by kind, not by priority. The four planned phases are not in this list: Phase 10 (open an assembly STEP as separate parts), Phase 11 (collision detection), Phase 12 (drawings) and Phase 13 (an MCP server, optional) have their own sections above.
 
 Size is a rough guess when the row was written, and nobody has measured it: **S** is a few hours, **M** a day or two, **L** several days or carries the risk the note names. Check it before promising anything. When an item is done, delete its row and add a status note at the top of this file, as the phases do. When the owner asks for one, give it a section of its own like the phases and keep its ID.
 

@@ -70,6 +70,24 @@ export function uniqueName(wanted: string, taken: string[]) {
 }
 
 /**
+ * Add files to a project without changing any file that is already in it, whatever the project holds.
+ * A file whose name is taken keeps both: it gets the next free `_2`, `_3` and so on (`arm.scad` becomes
+ * `arm_2.scad`), and so do two incoming files that share a name. `renamed` says which names changed.
+ */
+export function addFiles(existing: ProjectFile[], incoming: ProjectFile[]) {
+  const taken = existing.map((file) => file.name);
+  const added: ProjectFile[] = [];
+  const renamed: { from: string; to: string }[] = [];
+  for (const file of incoming) {
+    const name = uniqueName(file.name, taken);
+    taken.push(name);
+    if (name !== file.name) renamed.push({ from: file.name, to: name });
+    added.push({ ...file, name });
+  }
+  return { files: [...existing, ...added], added, renamed };
+}
+
+/**
  * What is wrong with a set of files, in a sentence for the engineer, or undefined when they fit:
  * 40 files, 256 KiB of text each, 40 MB for each imported file and 120 MB for all of them.
  */

@@ -57,6 +57,10 @@ with sync_playwright() as p:
     page.goto(url)
     page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
 
+    # The page has two file inputs: Open (a project, or files to open) and the one behind the file button beside the + (add, never replace).
+    OPEN_INPUT = 'input[aria-label^="Choose SCAD files"]'
+    ADD_INPUT = 'input[aria-label^="Choose SCAD, STEP or STL files to add"]'
+
     @contextlib.contextmanager
     def answering(text=None):
         # Answer the dialogs the page opens while the block runs, then stop. (A once-handler stays registered when no dialog
@@ -226,7 +230,7 @@ with sync_playwright() as p:
         download.value.save_as(str(step_path))
         stl_path = shots / 'block.stl'
         stl_path.write_bytes(block_stl())
-        page.set_input_files('input[type=file]', [str(step_path), str(stl_path)])
+        page.set_input_files(OPEN_INPUT, [str(step_path), str(stl_path)])
         page.wait_for_selector('.asset-panel', timeout=10000)
         tabs = page.locator('.file-tab-name').all_inner_texts()
         if 'arm_export.step' not in tabs or 'block.stl' not in tabs:
@@ -372,7 +376,7 @@ with sync_playwright() as p:
         tabs_before = page.locator('.file-tab-name').all_inner_texts()
         page_path = shots / 'notes.html'
         page_path.write_text('<!DOCTYPE html><html><body>Not CAD.</body></html>')
-        page.set_input_files('input[type=file]', [str(page_path)])
+        page.set_input_files(OPEN_INPUT, [str(page_path)])
         page.wait_for_selector('.output-message.error', timeout=10000)
         message = page.inner_text('.output-message.error').replace('\n', ' ')
         if 'notes.html is not a file this page opens' not in message or '.scad' not in message:
@@ -381,7 +385,7 @@ with sync_playwright() as p:
             problems.append(f'{name}: a refused file should not become a tab')
         junk_path = shots / 'junk.step'
         junk_path.write_text('<!DOCTYPE html><html><body>Not a STEP file.</body></html>')
-        page.set_input_files('input[type=file]', [str(junk_path)])
+        page.set_input_files(OPEN_INPUT, [str(junk_path)])
         page.wait_for_selector('.asset-panel', timeout=10000)
         if not page.locator('.asset-problem').count():
             page.get_by_role('button', name='Show on its own').click()
@@ -406,6 +410,40 @@ with sync_playwright() as p:
         tabs = page.locator('.file-tab-name').all_inner_texts()
         if tabs != ['part.scad'] or page.locator('.output-message.error').count() or 'Built one solid' not in notice:
             problems.append(f'{name}: expected one tab, part.scad, that builds: {tabs} {notice}')
+        # Add a .scad file from the computer to a project that has one file. Open would have replaced it. Nothing is replaced here,
+        # a name that is taken gets a number, and a saved project is refused.
+        bracket = shots / 'bracket.scad'
+        bracket.write_text('cube(7);')
+        page.set_input_files(ADD_INPUT, [str(bracket)])
+        page.wait_for_timeout(400)
+        tabs = page.locator('.file-tab-name').all_inner_texts()
+        if tabs != ['part.scad', 'bracket.scad']:
+            problems.append(f'{name}: adding bracket.scad to a one-file project should keep part.scad: {tabs}')
+        bracket.write_text('cube(8);')
+        page.set_input_files(ADD_INPUT, [str(bracket)])
+        page.wait_for_timeout(400)
+        tabs = page.locator('.file-tab-name').all_inner_texts()
+        said = page.inner_text('.output-message').replace('\n', ' ')
+        if tabs != ['part.scad', 'bracket.scad', 'bracket_2.scad'] or 'bracket.scad was already in the project, so the new one is bracket_2.scad' not in said:
+            problems.append(f'{name}: a second bracket.scad should be added as bracket_2.scad and the page should say so: {tabs} {said!r}')
+        page.locator('.file-tab-name', has_text='bracket.scad').first.click()
+        if 'cube(7)' not in page.inner_text('.cm-content'):
+            problems.append(f'{name}: the first bracket.scad should still hold cube(7)')
+        page.locator('.file-tab-name', has_text='bracket_2.scad').click()
+        if 'cube(8)' not in page.inner_text('.cm-content'):
+            problems.append(f'{name}: bracket_2.scad should hold the new cube(8)')
+        saved = shots / 'saved.partscript.zip'
+        saved.write_bytes(b'PK\x03\x04')
+        page.set_input_files(ADD_INPUT, [str(saved)])
+        page.wait_for_selector('.output-message.error', timeout=10000)
+        said = page.inner_text('.output-message.error').replace('\n', ' ')
+        if 'is a saved project' not in said or page.locator('.file-tab-name').count() != 3:
+            problems.append(f'{name}: a project zip should be refused by the add button, and nothing should change: {said!r} {page.locator(".file-tab-name").count()} tabs')
+        for extra in ('bracket_2.scad', 'bracket.scad'):
+            page.locator('.file-tab-name', has_text=extra).first.click()
+            with answering():
+                page.click(f'button[aria-label="Delete {extra}"]')
+        page.locator('.file-tab-name', has_text='part.scad').click()
         with answering('arm.scad'):
             page.click('button[aria-label="Add a file"]')
         page.wait_for_timeout(300)
@@ -457,10 +495,11 @@ with sync_playwright() as p:
                 problems.append(f'{name} ({state}): targets under 44 px: {found["small"]}')
 
         def plus_reachable(state):
-            # The + that adds a file has to be somewhere a finger can land: nothing may cover it or scroll it away.
-            reachable = tap.evaluate("() => { const box = document.querySelector('.file-add').getBoundingClientRect(); const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2); return !!(hit && hit.closest('.file-add')); }")
-            if not reachable:
-                problems.append(f'{name} ({state}): the + button that adds a file cannot be tapped')
+            # The two buttons that add a file (the + and the file button) have to be somewhere a finger can land: nothing may
+            # cover them or scroll them away.
+            reachable = tap.evaluate("() => [...document.querySelectorAll('.file-add')].map((button) => { const box = button.getBoundingClientRect(); const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2); return !!(hit && hit.closest('.file-add') === button); })")
+            if len(reachable) != 2 or not all(reachable):
+                problems.append(f'{name} ({state}): the buttons that add a file cannot both be tapped: {reachable}')
 
         # Preview first, with the Code pane out of the way.
         if tap.locator('.workspace').get_attribute('data-view') != 'preview' or tap.locator('.source-pane').is_visible() or not tap.locator('.preview-pane').is_visible():
@@ -563,7 +602,7 @@ with sync_playwright() as p:
             problems.append(f'{name}: the file picker should still filter by type with a mouse')
         with tap.expect_download() as download:
             tap.locator('button[aria-label="Export STEP"]').tap()
-        tap.set_input_files('input[type=file]', files=[{'name': '\u0645\u0648\u0679\u0631 Kingroo-.STEP', 'mimeType': '', 'buffer': pathlib.Path(download.value.path()).read_bytes()}])
+        tap.set_input_files(OPEN_INPUT, files=[{'name': '\u0645\u0648\u0679\u0631 Kingroo-.STEP', 'mimeType': '', 'buffer': pathlib.Path(download.value.path()).read_bytes()}])
         tap.wait_for_selector('.asset-panel', state='attached', timeout=10000)
         imported = [tab for tab in tap.locator('.file-tab-name').all_text_contents() if 'Kingroo' in tab]
         if len(imported) != 1 or not imported[0].endswith('.step'):
@@ -574,7 +613,7 @@ with sync_playwright() as p:
         tap.wait_for_timeout(300)
         plus_reachable('a long imported file name')
         tap.once('dialog', lambda dialog: dialog.accept('assembly.scad'))
-        tap.locator('.file-add').tap()
+        tap.locator('button[aria-label="Add a file"]').tap()
         tap.wait_for_timeout(400)
         shown = tap.evaluate("() => { const strip = document.querySelector('.file-tabs').getBoundingClientRect(), tab = document.querySelector('.file-tab.selected .file-tab-name'), box = tab.getBoundingClientRect(); return { name: tab.textContent, inside: box.left >= strip.left - 1 && box.left < strip.right - 60 }; }")
         if shown['name'] != 'assembly.scad' or not shown['inside']:
@@ -676,6 +715,30 @@ with sync_playwright() as p:
             if yellow() < 10:
                 problems.append(f'{name}: the lines where the surfaces cross should be drawn')
         page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}collision.png"))
+
+        # The Collisions button turns the whole check off: no red, no card, no Check motion, no Stop at collision. It stays off
+        # after a reload, and turning it on again brings the card back.
+        toggle = 'button[aria-label="Collision detection"]'
+        page.click(toggle)
+        page.wait_for_timeout(600)
+        if page.get_attribute(toggle, 'aria-pressed') != 'false' or page.locator('.collision-card').count() or red() > 50 or page.locator('.joint-check').count() or page.locator('.joint-stop').count():
+            problems.append(f'{name}: with Collisions off there should be no card, no red, no Check motion and no Stop at collision')
+        page.reload()
+        page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
+        page.wait_for_selector(toggle, timeout=20000)
+        if page.get_attribute(toggle, 'aria-pressed') != 'false':
+            problems.append(f'{name}: Collisions should still be off after a reload')
+        page.locator('.joint-value input').first.fill('20')
+        page.wait_for_timeout(1200)
+        if page.locator('.collision-card').count() or red() > 50:
+            problems.append(f'{name}: a block moved into another with Collisions off should show no card and no red')
+        page.click(toggle)
+        try:
+            page.wait_for_function("() => document.querySelector('.collision-card')?.innerText.includes('500 mm³')", timeout=15000)
+        except Exception:
+            problems.append(f'{name}: turning Collisions on should bring the card back with 500 mm³: {page.inner_text(".collision-card") if page.locator(".collision-card").count() else "no card"!r}')
+        if page.get_attribute(toggle, 'aria-pressed') != 'true' or red() < 200 or not page.locator('.joint-check').count() or not page.locator('.joint-stop').count():
+            problems.append(f'{name}: with Collisions on again the red, Check motion and Stop at collision should be back')
         page.click('.joints-reset')
         page.wait_for_timeout(500)
         if page.locator('.collision-card').count() or red() > 50:

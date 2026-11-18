@@ -1,4 +1,4 @@
-import { BookOpen, Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, Ellipsis, FileBox, FileCode2, FilePlus, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
+import { BookOpen, Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, Ellipsis, FileBox, FileCode2, FilePlus, FileUp, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { CodeEditor, type EditorControl } from './components/CodeEditor.tsx';
 import { AssetPanel } from './components/AssetPanel.tsx';
@@ -11,7 +11,7 @@ import { facetedText, flatRoundNotes } from './engine/summary.ts';
 import { CadError, MAX_ASSET_BYTES, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type BuildStage, type CollisionTest, type Diagnostic, type MeasurePick, type ModelPreview, type Pose } from './engine/protocol.ts';
 import { loadDraft, saveDraft } from './drafts.ts';
 import { exampleProjects } from './examples.ts';
-import { assetFilename, isAsset, isAssetName, projectProblem, readProject, readProjectZipAsync, scadFilename, serializeProjectZipAsync, toAssets, toFiles, uniqueName, type Project, type ProjectFile } from './project.ts';
+import { addFiles, assetFilename, isAsset, isAssetName, projectProblem, readProject, readProjectZipAsync, scadFilename, serializeProjectZipAsync, toAssets, toFiles, uniqueName, type Project, type ProjectFile } from './project.ts';
 
 interface DocumentState extends Project {
   revision: number;
@@ -46,6 +46,18 @@ function download(data: string | Uint8Array<ArrayBuffer>, filename: string, type
 
 function elapsed(milliseconds: number) {
   return milliseconds < 1000 ? `${Math.max(1, Math.round(milliseconds))} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
+}
+
+/** What the page says after files were added to the project. */
+function addedNotice(added: ProjectFile[], renamed: { from: string; to: string }[], pinned: string | null) {
+  const imported = added.filter(isAsset);
+  let text = imported.length === added.length
+    ? `Added ${imported.map((file) => `${file.name} (${formatBytes(file.data.byteLength)})`).join(', ')}. Press Show on its own to look at it, or use it as a part.`
+    : `Added ${added.length === 1 ? added[0].name : count(added.length, 'file')} to the project.`;
+  if (renamed.length) text += ` ${renamed.map(({ from, to }) => `${from} was already in the project, so the new one is ${to}.`).join(' ')}`;
+  // The new file is open, and Run builds the open file unless one is pinned.
+  if (!pinned && added.some((file) => !isAsset(file))) text += ' Run builds the file that is open, so open your main file first, or pin it.';
+  return text;
 }
 
 function count(n: number, noun: string) {
@@ -112,6 +124,7 @@ export function App() {
   const editor = useRef<EditorControl>(null);
   const pendingLine = useRef<number | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const addInput = useRef<HTMLInputElement>(null);
   const examplesMenu = useRef<HTMLDetailsElement>(null);
   const help = useRef<HTMLDialogElement>(null);
   const moreMenu = useRef<HTMLDivElement>(null);
@@ -382,13 +395,17 @@ export function App() {
     setNotice({ kind: 'idle', text: entry ? `Run now builds ${entry}, whichever file is open.` : 'Run now builds the file that is open.' });
   }
 
-  async function openFiles(list: File[]) {
+  /** Open files, or with `adding` set, add them to the open project: nothing that is in it is replaced, and a name that is taken gets a number. */
+  async function openFiles(list: File[], adding = false) {
     try {
       if (busy.current) return;
       const added: ProjectFile[] = [];
       for (const file of list) {
         const unreadable = unreadableFormat(file.name);
         if (unreadable) throw new CadError(unreadable);
+        if (adding && /\.(?:zip|json)$/i.test(file.name)) {
+          throw new CadError(`${file.name} is a saved project, and adding a file never replaces the project. Use Open to open it, or unzip it and add the .scad files you want.`);
+        }
         if (/\.zip$/i.test(file.name)) {
           replaceDocument(await readProjectZipAsync(new Uint8Array(await file.arrayBuffer())));
           return;
@@ -422,6 +439,13 @@ export function App() {
       }
       if (!added.length) return;
       const before = latest.current;
+      if (adding) {
+        const { files, added: placed, renamed } = addFiles(before.files, added);
+        const problem = projectProblem(files);
+        if (problem) throw new CadError(problem);
+        editProject({ files, active: placed[0].name }, addedNotice(placed, renamed, before.entry));
+        return;
+      }
       // One .scad file opens on its own, as before. Anything else joins the current project.
       if (added.length === 1 && !isAsset(added[0]) && before.files.length === 1) {
         replaceDocument({ files: added, active: added[0].name, entry: null });
@@ -572,7 +596,7 @@ export function App() {
               <button className="button button-quiet file-action" type="button" title="Start a new project with one blank file. Add more files with the + beside the tabs." aria-label="New project" disabled={!!stage} onClick={newProject}>
                 <FilePlus size={17}/><span>New</span>
               </button>
-              <button className="button button-quiet file-action" type="button" title="Open SCAD files, STEP or STL files to import, or a saved project (.zip)" aria-label="Open" disabled={!!stage} onClick={() => fileInput.current?.click()}>
+              <button className="button button-quiet file-action" type="button" title="Open SCAD files, STEP or STL files to import, or a saved project (.zip). A single .scad file replaces a project that has one file: to add a file without replacing anything, use the file button beside the + on the tabs." aria-label="Open" disabled={!!stage} onClick={() => fileInput.current?.click()}>
                 <FolderOpen size={17}/><span>Open</span>
               </button>
               <button className="button button-quiet file-action" type="button" title="Download the open file as it is" aria-label="Save file" onClick={saveScad}>
@@ -590,6 +614,11 @@ export function App() {
             const list = [...(event.currentTarget.files ?? [])];
             event.currentTarget.value = '';
             if (list.length) void openFiles(list);
+          }}/>
+          <input ref={addInput} type="file" multiple className="visually-hidden" tabIndex={-1} aria-label="Choose SCAD, STEP or STL files to add to this project" accept={anyFile ? undefined : '.scad,.step,.stp,.stl,text/plain'} onChange={(event) => {
+            const list = [...(event.currentTarget.files ?? [])];
+            event.currentTarget.value = '';
+            if (list.length) void openFiles(list, true);
           }}/>
           <span className="action-divider" />
           {stage ? (
@@ -636,7 +665,10 @@ export function App() {
                   </div>
                 );
               })}
-              <button type="button" className="file-add" title="Add a file to this project" aria-label="Add a file" disabled={!!stage} onClick={addFile}><Plus size={15}/></button>
+              <span className="file-adds">
+                <button type="button" className="file-add" title="Add a blank file to this project" aria-label="Add a file" disabled={!!stage} onClick={addFile}><Plus size={15}/></button>
+                <button type="button" className="file-add" title="Add a .scad file from your computer to this project. Nothing in the project is replaced." aria-label="Add a file from your computer" disabled={!!stage} onClick={() => addInput.current?.click()}><FileUp size={15}/></button>
+              </span>
             </div>
             <details ref={examplesMenu} className="examples" onKeyDown={(event) => {
               if (event.key === 'Escape' && examplesMenu.current?.open) {
@@ -734,11 +766,11 @@ export function App() {
             <dt>BOSL2</dt>
             <dd>Gears, threads, screws and more come from the BOSL2 library. Start the file with <code>include &lt;BOSL2/std.scad&gt;</code>, add the file you need such as <code>include &lt;BOSL2/gears.scad&gt;</code>, then call <code>spur_gear(mod = 2, teeth = 20, thickness = 8);</code>. The library is about 1.2 MB and downloads the first time a project includes it during a visit. Each run that includes it takes about a quarter of a second longer, so write many parts in one file with <code>part("name") ...</code> rather than one file per part. Gears are exact; threads are faceted, so their STEP has flat faces.</dd>
             <dt>Collisions</dt>
-            <dd>Parts that share volume are a collision, and parts that only touch are not. The colliding parts turn red, yellow lines show where their surfaces cross, and a card names the pair and gives the overlap in mm³ once the joint has stopped. <strong>Check motion</strong>, the magnifier on a joint, turns it through its whole travel and lists where each pair overlaps. Press a line to go to where it starts. <strong>Stop at collision</strong>, under the joints, holds a joint at the last clear pose. Name a pair that overlaps by design with <code>allow_overlap("shaft", "plate");</code> and it is skipped. A pair that includes a faceted part is found from the preview mesh only.</dd>
+            <dd>Parts that share volume are a collision, and parts that only touch are not. The colliding parts turn red, yellow lines show where their surfaces cross, and a card names the pair and gives the overlap in mm³ once the joint has stopped. <strong>Check motion</strong>, the magnifier on a joint, turns it through its whole travel and lists where each pair overlaps. Press a line to go to where it starts. <strong>Stop at collision</strong>, under the joints, holds a joint at the last clear pose. Name a pair that overlaps by design with <code>allow_overlap("shaft", "plate");</code> and it is skipped. A pair that includes a faceted part is found from the preview mesh only. The <strong>Collisions</strong> button in the preview toolbar turns the whole check off and on.</dd>
             <dt>Imported STEP and STL files</dt>
             <dd>Choose <strong>Open</strong> and pick a <code>.step</code>, <code>.stp</code> or <code>.stl</code> file, such as a motor or a bearing from GrabCAD or a supplier. It becomes a tab you can look at with <strong>Show on its own</strong> and measure. Use it as a part with <code>part("motor", "motor.step");</code> and connect it with joints like any other part. A STEP that holds an assembly lists its parts in its tab: <code>part("arm", "robot.step", component = "arm");</code> or <code>body = 2</code> takes one of them, in the place and colour the file gives it. A STEP keeps its true curves and exports as it came. An STL is a mesh with no units, read as millimetres, so it exports with flat faces. Inside a <code>.scad</code> file, <code>import("bracket.stl");</code> reads an STL of the project too. Files from a CAD program's own format (<code>.sldprt</code>, <code>.ipt</code>, <code>.f3d</code>, <code>.x_t</code>) and IGES files cannot be read, so download or export the STEP version. One file can be up to 40 MB and a project up to 120 MB of them.</dd>
             <dt>Sharing values</dt>
-            <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>New</strong> starts a blank project with one file, and the <strong>+</strong> beside the tabs adds more. <strong>Save project</strong> downloads every file, imported ones included, as one zip a teammate can open.</dd>
+            <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>New</strong> starts a blank project with one file, the <strong>+</strong> beside the tabs adds a blank file, and the file button next to it adds a <code>.scad</code> file from your computer without replacing anything. <strong>Save project</strong> downloads every file, imported ones included, as one zip a teammate can open.</dd>
             <dt>On a phone</dt>
             <dd>The page shows the preview or the code, one at a time: use the <strong>Preview</strong> and <strong>Code</strong> buttons under the header. New, Open, Save and the manual are behind <strong>⋯</strong>. <strong>Joints</strong> opens a strip under the model. Drag to turn the model, pinch to zoom, and tap in <strong>Measure</strong> where a mouse would click.</dd>
             <dt>Model limits</dt>

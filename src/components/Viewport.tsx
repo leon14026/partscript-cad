@@ -1,4 +1,4 @@
-import { Box, Boxes, Check, Copy, CornerDownRight, Expand, Eye, EyeOff, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, Ruler, RotateCcw, RotateCw, ScanSearch, TriangleAlert, X } from 'lucide-react';
+import { Box, Boxes, Check, Copy, CornerDownRight, Expand, Eye, EyeOff, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, Ruler, RotateCcw, RotateCw, ScanSearch, ShieldAlert, ShieldOff, TriangleAlert, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { clampJoint, followerStates, movingJoints, poseBounds, solvePose, structureOf, turnsFully, type JointSpec } from '../engine/assembly.ts';
 import { advanceJoint, loopStates, moveJoint } from '../engine/kinematics.ts';
@@ -32,12 +32,13 @@ interface JointControlProps {
   checking: boolean;
   /** False when there is no second part to run into, or another check is running. */
   canCheck: boolean;
+  showCheck: boolean;
   onChange(value: number, dragging: boolean): void;
   onPlay(): void;
   onCheck(): void;
 }
 
-function JointControl({ joint, value, linked, playing, locked, checking, canCheck, onChange, onPlay, onCheck }: JointControlProps) {
+function JointControl({ joint, value, linked, playing, locked, checking, canCheck, showCheck, onChange, onPlay, onCheck }: JointControlProps) {
   const [low, high] = joint.limits;
   const unit = joint.type === 'hinge' ? '°' : 'mm';
   const step = high - low > 20 ? 1 : 0.1;
@@ -51,10 +52,12 @@ function JointControl({ joint, value, linked, playing, locked, checking, canChec
         {linked && <Link2 className="joint-linked" size={12} aria-label="in a loop"/>}
       </label>
       <span className="joint-value">
-        <button type="button" className="joint-check" aria-pressed={checking} title={checking ? `Stop checking ${joint.name}` : `Check motion: turn ${joint.name} through its travel and list where parts overlap`}
-          aria-label={checking ? `Stop checking ${joint.name}` : `Check motion of ${joint.name}`} disabled={joint.limits[0] === joint.limits[1] || (!canCheck && !checking)} onClick={onCheck}>
-          {checking ? <X size={11}/> : <ScanSearch size={11}/>}
-        </button>
+        {showCheck && (
+          <button type="button" className="joint-check" aria-pressed={checking} title={checking ? `Stop checking ${joint.name}` : `Check motion: turn ${joint.name} through its travel and list where parts overlap`}
+            aria-label={checking ? `Stop checking ${joint.name}` : `Check motion of ${joint.name}`} disabled={joint.limits[0] === joint.limits[1] || (!canCheck && !checking)} onClick={onCheck}>
+            {checking ? <X size={11}/> : <ScanSearch size={11}/>}
+          </button>
+        )}
         <button type="button" className="joint-play" aria-pressed={playing} title={locked ? 'Clear the measurement to play a joint' : playing ? `Stop ${joint.name}` : `Run ${joint.name} through its travel`} aria-label={playing ? `Stop ${joint.name}` : `Play ${joint.name}`} disabled={joint.limits[0] === joint.limits[1] || locked} onClick={onPlay}>
           {playing ? <Pause size={11}/> : <Play size={11}/>}
         </button>
@@ -159,6 +162,23 @@ const volumeText = (value: number) => (value < 0.01 ? '<0.01' : volumeFormat.for
 const confirmBudgetMs = 45_000;
 /** Above this many triangles in all, the page does not check for collisions at every pose. */
 const maxLiveTriangles = 600_000;
+const collisionKey = 'partscript.collisions';
+
+/** Collision detection is on unless it was turned off in this browser. */
+function readCollisionSetting() {
+  try {
+    return window.localStorage.getItem(collisionKey) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
+function saveCollisionSetting(on: boolean) {
+  try {
+    if (on) window.localStorage.removeItem(collisionKey);
+    else window.localStorage.setItem(collisionKey, 'off');
+  } catch { /* Storage can be blocked. The setting then lasts until the page is closed. */ }
+}
 const pairNames = (model: ModelPreview, pairs: [number, number][]) => pairs
   .map(([a, b]) => `${model.assembly.parts[a].name} and ${model.assembly.parts[b].name}`).join(', ');
 
@@ -198,12 +218,13 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
   const [measureError, setMeasureError] = useState<string | null>(null);
   const reading = useRef({ busy: false, wanted: null as { picks: MeasurePick[]; pose: Pose } | null, latest: null as object | null });
   // Collisions. The quick check runs on the preview meshes in the page; the exact one runs in the worker once a pose has settled.
+  const [collisionsOn, setCollisionsOn] = useState(readCollisionSetting);
   const [stopAtCollision, setStopAtCollision] = useState(false);
   const [stopNote, setStopNote] = useState<string | null>(null);
   const [motion, setMotion] = useState<MotionState | null>(null);
   const motionToken = useRef(0);
   const [verdicts, setVerdicts] = useState<{ pose: Pose; volumes: Map<number, number | null> } | null>(null);
-  const checker = useMemo(() => (model ? new CollisionChecker(model.assembly, model.partMesh.map((i) => model.meshes[i])) : null), [model]);
+  const checker = useMemo(() => (model && collisionsOn ? new CollisionChecker(model.assembly, model.partMesh.map((i) => model.meshes[i])) : null), [model, collisionsOn]);
   const live = useRef({ model, pose, onPose, onMeasure, picks, measuring, checker, stopAtCollision });
   live.current = { model, pose, onPose, onMeasure, picks, measuring, checker, stopAtCollision };
 
@@ -336,6 +357,16 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
     setVerdicts(null);
     setStopNote(null);
   }, [model]);
+
+  /** Turn collision detection on or off. Off stops a motion check that is running and forgets what the checks said. */
+  function switchCollisions(on: boolean) {
+    setCollisionsOn(on);
+    saveCollisionSetting(on);
+    motionToken.current++;
+    setMotion(null);
+    setVerdicts(null);
+    setStopNote(null);
+  }
 
   /** Move a joint to a value, or as far toward it as it goes without running into a part it did not already touch. */
   function stepJoint(name: string, value: number) {
@@ -516,7 +547,7 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
         <div className="pane-title">
           {model?.isAssembly ? <Boxes size={17} /> : <Box size={17} />} <h2>3D Preview</h2>
           {model?.isAssembly && <span className="part-count" title={partQualities(model)}>{partCount} {partCount === 1 ? 'part' : 'parts'}</span>}
-          {model && model.assembly.allowed.length > 0 && (
+          {model && collisionsOn && model.assembly.allowed.length > 0 && (
             <span className="part-count" title="allow_overlap() names these pairs, so they are not checked for collisions">{model.assembly.allowed.length} allowed</span>
           )}
           {model && !model.isAssembly && model.meshes[0]?.quality === 'faceted' && (
@@ -563,6 +594,11 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
           <button className="view-tool" type="button" disabled={!model} aria-pressed={measuring} aria-label="Measure"
             title={measuring ? 'Leave Measure (Esc)' : 'Measure: click a face, an edge or a corner. Click two to read the distance and angle between them.'}
             onClick={() => setMeasuring(!measuring)}><Ruler size={16}/><span>Measure</span></button>
+          {model?.isAssembly && partCount > 1 && (
+            <button className="view-tool" type="button" aria-pressed={collisionsOn} aria-label="Collision detection"
+              title={collisionsOn ? 'Collision detection is on: parts that overlap turn red. Press to turn it off.' : 'Collision detection is off. Press to turn it on.'}
+              onClick={() => switchCollisions(!collisionsOn)}>{collisionsOn ? <ShieldAlert size={16}/> : <ShieldOff size={16}/>}<span>Collisions</span></button>
+          )}
           <span className="view-tool-divider" />
           <button className="view-tool" type="button" title="Toggle grid and axes" aria-label="Grid and axes" aria-pressed={grid} onClick={() => setGrid(!grid)}><Grid3X3 size={16}/><span>Grid</span></button>
           <button className="view-tool" type="button" title="Toggle part edges" aria-label="Part edges" aria-pressed={edges} onClick={() => setEdges(!edges)}><Layers2 size={16}/><span>Edges</span></button>
@@ -608,7 +644,7 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
             {measureError && <p className="measure-error" role="alert">{measureError}</p>}
           </section>
         )}
-        {model && !graphicsFailed && (overlaps.length > 0 || motion || stopNote || tooBig) && (
+        {model && !graphicsFailed && collisionsOn && (overlaps.length > 0 || motion || stopNote || tooBig) && (
           <section className="collision-card" aria-label="Collisions">
             <header>
               <TriangleAlert size={14}/><strong>{overlaps.length ? 'Collision' : 'Collisions'}</strong>
@@ -652,7 +688,7 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
                 {joints.map((joint) => (
                   <JointControl key={joint.name} joint={joint} value={clampJoint(joint, pose[joint.name])}
                     linked={looped[model!.assembly.joints.indexOf(joint)]} playing={playing === joint.name} locked={picks.length > 0}
-                    checking={motion?.joint === joint.name && !motion.report} canCheck={partCount > 1 && !(motion && !motion.report)}
+                    checking={motion?.joint === joint.name && !motion.report} canCheck={partCount > 1 && !(motion && !motion.report)} showCheck={collisionsOn}
                     onPlay={() => setPlaying(playing === joint.name ? null : joint.name)}
                     onCheck={() => {
                       if (motion && !motion.report) motionToken.current++, setMotion(null);
@@ -679,7 +715,7 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
                     <i>follows {driver.name} · {measure.format(Math.round(value * 100) / 100)}{joint.type === 'hinge' ? '°' : ' mm'}</i>
                   </div>
                 ))}
-                {partCount > 1 && (
+                {partCount > 1 && collisionsOn && (
                   <label className="joint-stop" title="A joint you move or play stops at the last pose before it runs into a part it was clear of. This is a setting of the page and is not saved in the code.">
                     <input type="checkbox" checked={stopAtCollision} onChange={(event) => {
                       setStopAtCollision(event.currentTarget.checked);
