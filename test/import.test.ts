@@ -11,6 +11,7 @@ import { CadError, MAX_ASSET_BYTES, type ProjectAssets, type ProjectFiles } from
 import { evaluateScad, renderMesh, type OpenScadFactory } from '../src/engine/scad.ts';
 import { examples } from '../src/examples.ts';
 import { importedMeshing } from '../src/engine/solid.ts';
+import { facetedText } from '../src/engine/summary.ts';
 import { assetFilename, isAsset, projectProblem, readProject, readProjectZip, serializeProject, serializeProjectZip, toAssets, toFiles, uniqueName, type Project } from '../src/project.ts';
 import { strToU8, zipSync } from 'fflate';
 
@@ -203,6 +204,8 @@ test('a file that cannot be used says what to change and names the file', async 
   const holed = toBinaryStl({ positions: parseBinaryStl(block).positions.slice(0, 11 * 9) });
   const open = await build({}, 'open.stl', { 'open.stl': holed });
   assert.match(open.preview.meshes[0].reason!, /not closed \(3 open edges\)/);
+  // One sentence says it, and the consequence follows once, not as a second "so" inside the reason.
+  assert.equal(facetedText(open.preview), 'This solid is faceted because it uses an imported STL mesh that is not closed (3 open edges), so STEP has flat faces. A mesh that is not closed has no exact volume, and STEP export may fail.');
 
   // import() in a .scad file: STEP, a name that is not there, a name in a variable, a format OpenSCAD reads but this site does not.
   await rejected({ 'a.scad': 'cube(1);\nimport("motor.step");' }, 'a.scad', { 'motor.step': new TextEncoder().encode('x') }, /cannot read STEP files inside a model.*part\("name", "motor\.step"\)/, 'a.scad', 2);

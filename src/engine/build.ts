@@ -285,7 +285,7 @@ export class ModelBuilder {
     }
     // STEP is made from a binary STL, so keep one whatever the file was.
     // A mesh with open edges still shows and measures, but its volume is not a volume and STEP export will say it cannot sew it.
-    const reason = stats.openEdges ? `an imported STL mesh that is not closed (${stats.openEdges.toLocaleString('en-US')} open edges), so its volume is not exact and STEP export may fail` : 'an imported STL mesh';
+    const reason = stats.openEdges ? `an imported STL mesh that is not closed (${stats.openEdges.toLocaleString('en-US')} open edges)` : 'an imported STL mesh';
     return { kind: 'faceted', stl: toBinaryStl(soup), mesh: { ...shown, volume, quality: 'faceted', reason } };
   }
 

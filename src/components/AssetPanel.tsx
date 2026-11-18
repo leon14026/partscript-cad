@@ -32,8 +32,10 @@ export function AssetPanel({ file, model, problem, busy, onShow }: Props) {
   const mesh = model && index >= 0 ? model.meshes[model.partMesh[index]] : undefined;
   const line = `part("${partName(file.name)}", "${file.name}");`;
 
-  const facts: [string, string][] = [['Format', format === 'STL' ? 'STL mesh' : 'STEP, exact geometry'], ['Size', formatBytes(file.data.byteLength)]];
-  if (mesh) {
+  // A file that could not be read says nothing about its format or geometry, only its size.
+  const facts: [string, string][] = problem ? [['Size', formatBytes(file.data.byteLength)]]
+    : [['Format', format === 'STL' ? 'STL mesh' : 'STEP, exact geometry'], ['Size', formatBytes(file.data.byteLength)]];
+  if (mesh && !problem) {
     if (format === 'STEP') facts.push(['Bodies', String(mesh.bodies ?? 1)]);
     facts.push(['Bounding box', `${sizeText(mesh.bounds.min, mesh.bounds.max)} mm`]);
     facts.push(['Volume', `${(Math.round(mesh.volume / 10) / 100).toLocaleString('en-US')} cm³`]);
@@ -50,6 +52,8 @@ export function AssetPanel({ file, model, problem, busy, onShow }: Props) {
       {!mesh && !problem && <p className="asset-note">{model ? 'The last build did not use this file.' : 'Nothing is built yet.'} Press <strong>Show on its own</strong> to read it, or put it in an assembly with the line below.</p>}
       {format === 'STL' && <p className="asset-note">An STL has no units. It is read as millimetres. It shows and exports with flat faces, because a mesh has no true curves.</p>}
       {format === 'STEP' && mesh && <p className="asset-note">Units are converted to millimetres when the file is read.</p>}
+      {problem && <p className="asset-note">Delete this file with the × on its tab, then open a corrected copy. Use <strong>Save file</strong> to download what was opened.</p>}
+      {!problem && <>
       <div className="asset-actions">
         <button type="button" className="button button-quiet" disabled={busy} onClick={onShow}><Eye size={16}/><span>Show on its own</span></button>
         <button type="button" className="button button-quiet" onClick={() => {
@@ -61,6 +65,7 @@ export function AssetPanel({ file, model, problem, busy, onShow }: Props) {
       </div>
       <p className="asset-line"><code>{line}</code></p>
       <p className="asset-note">Paste that line into an assembly file, then connect the part with <code>joint()</code> like any other. Use <strong>Save file</strong> to download the original.</p>
+      </>}
     </div>
   );
 }

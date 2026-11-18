@@ -360,6 +360,9 @@ export function App() {
           added.push({ name: assetFilename(file.name), data: new Uint8Array(await file.arrayBuffer()) });
           continue;
         }
+        if (!/\.(?:scad|json)$/i.test(file.name)) {
+          throw new CadError(`${file.name} is not a file this page opens. Open a .scad file, a .step, .stp or .stl file to import, or a saved project (.zip). If it is OpenSCAD code, rename it to end in .scad.`);
+        }
         if (file.size > MAX_SOURCE_BYTES * 8) throw new CadError(`${file.name} is too large to open.`);
         const source = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
         if (source.includes('\0')) throw new CadError(`${file.name} is not plain text. Open .scad files, .step, .stp or .stl files, or a project zip.`);

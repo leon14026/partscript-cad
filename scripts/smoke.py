@@ -183,6 +183,15 @@ with sync_playwright() as p:
         page.keyboard.press('Escape')
         page.keyboard.press('Escape')
         page.wait_for_timeout(300)
+        # Esc must also leave the tool while a joint slider has the keyboard focus (it used to be ignored there).
+        if page.locator('input[type=range]').count():
+            measure_button().click()
+            page.wait_for_timeout(300)
+            page.locator('input[type=range]').first.focus()
+            page.keyboard.press('Escape')
+            page.wait_for_timeout(300)
+            if measure_button().get_attribute('aria-pressed') != 'false':
+                problems.append(f'{name}: Esc should leave the Measure tool while a joint slider has focus')
 
     def block_stl(a=10, b=20, c=30):
         # A closed box as a binary STL, written here so that nothing but the script is needed.
@@ -283,6 +292,33 @@ with sync_playwright() as p:
             same = archive.read('block.stl') == stl_path.read_bytes() and archive.read('arm_export.step') == step_path.read_bytes()
         if 'partscript.json' not in inside or not same:
             problems.append(f'{name}: the project zip should hold the imported files unchanged: {inside}')
+
+    def check_bad_files():
+        # Open says what is wrong with a file it cannot use. A web page is not a CAD file, and a web page renamed .step is not a STEP.
+        name = 'bad files'
+        tabs_before = page.locator('.file-tab-name').all_inner_texts()
+        page_path = shots / 'notes.html'
+        page_path.write_text('<!DOCTYPE html><html><body>Not CAD.</body></html>')
+        page.set_input_files('input[type=file]', [str(page_path)])
+        page.wait_for_selector('.output-message.error', timeout=10000)
+        message = page.inner_text('.output-message.error').replace('\n', ' ')
+        if 'notes.html is not a file this page opens' not in message or '.scad' not in message:
+            problems.append(f'{name}: an .html file should be refused with a message that names it and what to open: {message!r}')
+        if page.locator('.file-tab-name').all_inner_texts() != tabs_before:
+            problems.append(f'{name}: a refused file should not become a tab')
+        junk_path = shots / 'junk.step'
+        junk_path.write_text('<!DOCTYPE html><html><body>Not a STEP file.</body></html>')
+        page.set_input_files('input[type=file]', [str(junk_path)])
+        page.wait_for_selector('.asset-panel', timeout=10000)
+        if not page.locator('.asset-problem').count():
+            page.get_by_role('button', name='Show on its own').click()
+        page.wait_for_selector('.asset-problem', timeout=20000)
+        panel = page.inner_text('.asset-panel')
+        if 'is not a STEP file' not in panel:
+            problems.append(f'{name}: the panel should say junk.step is not a STEP file: {panel!r}')
+        if 'exact geometry' in panel or page.locator('.asset-actions').count():
+            problems.append(f'{name}: a file that could not be read should not claim a format or offer Show and Copy: {panel!r}')
+        print(f'{name}: ok')
 
     def check_new_project():
         # New starts a blank one-file project, and the + beside the tabs adds to it.
@@ -394,6 +430,7 @@ with sync_playwright() as p:
     print(f'BOSL2 gear: {notice} (fetches: {len(library_fetches)})')
     check_import(names.index('Swivel arm assembly'))
     check_new_project()
+    check_bad_files()
     browser.close()
 
 server.shutdown()

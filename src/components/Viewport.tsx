@@ -253,7 +253,8 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       if (partsMenu.current?.open) return;
-      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      // Esc belongs to a field while someone types in it. A joint slider or a tick box is not typing, so Esc still works there.
+      if (event.target instanceof HTMLElement && event.target.closest('textarea, select, [contenteditable="true"], input:not([type="range"], [type="checkbox"], [type="radio"], [type="button"])')) return;
       if (live.current.picks.length) setPicks([]);
       else setMeasuring(false);
     };
@@ -358,7 +359,7 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
               <Ruler size={14}/><strong>Measure</strong>
               <button type="button" className="measure-clear" disabled={!picks.length} onClick={() => setPicks([])}><X size={12}/> Clear</button>
             </header>
-            {!picks.length && <p className="measure-hint">Click a face, an edge or a corner. Click a second one to read the distance and angle between them. Esc clears.</p>}
+            {!picks.length && <p className="measure-hint">Click a face, an edge or a corner. Click a second one to read the distance and angle between them. Esc clears the picks, and a second Esc leaves Measure.</p>}
             {picks.length === 1 && !result && !measureError && <p className="measure-hint">Reading…</p>}
             {result?.items.map((item, i) => (
               <div className="measure-item" key={i}>
