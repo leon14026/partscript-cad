@@ -7,7 +7,7 @@ import { clampJoint, defaultPose, fileNamePattern, structureOf, type AssemblySpe
 import { stemOf, unreadableFormat, formatBytes } from './engine/assets.ts';
 import { BrowserGeometryEngine } from './engine/client.ts';
 import { loopStates, openingPose, settlePose } from './engine/kinematics.ts';
-import { facetedText } from './engine/summary.ts';
+import { facetedText, flatRoundNotes } from './engine/summary.ts';
 import { CadError, MAX_ASSET_BYTES, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type BuildStage, type Diagnostic, type MeasurePick, type ModelPreview, type Pose } from './engine/protocol.ts';
 import { loadDraft, saveDraft } from './drafts.ts';
 import { exampleProjects } from './examples.ts';
@@ -117,6 +117,8 @@ export function App() {
   const [caret, setCaret] = useState({ line: 1, column: 1, count: 1 });
   const [stage, setStage] = useState<BuildStage | null>(null);
   const [preview, setPreview] = useState<ModelPreview>();
+  /** Log lines about the last build that are not errors, such as a hexagon made with $fn. */
+  const [buildLog, setBuildLog] = useState<string[]>([]);
   const [pose, setPose] = useState<Pose>({});
   const shownPose = useRef(pose);
   const shownAssembly = useRef<AssemblySpec | undefined>(undefined);
@@ -147,20 +149,25 @@ export function App() {
     setStage('load');
     const entry = snapshot.entry ?? snapshot.active;
     try {
-      const result = await engine.build(toFiles(snapshot), toAssets(snapshot), entry, snapshot.revision, setStage);
+      const files = toFiles(snapshot);
+      const result = await engine.build(files, toAssets(snapshot), entry, snapshot.revision, setStage);
+      const rounds = flatRoundNotes(result, files, entry);
       const opening = carryPose(result.assembly, shownAssembly.current, shownPose.current);
       const openLoop = opening.closed ? undefined : openLoopText(result.assembly, opening.pose);
       updatePose(opening.pose);
       shownAssembly.current = result.assembly;
       setPreview(result);
+      setBuildLog(rounds.logs);
       setBuiltRevision(snapshot.revision);
       // Run keeps building an assembly while its part files are being edited.
       if (result.isAssembly && latest.current.entry === null && latest.current.files.some((file) => file.name === entry)) {
         updateDocument({ ...latest.current, entry });
       }
-      if (openLoop) setOutputOpen(true);
+      // The part is built and can be exported, but something in it is probably not what was meant.
+      const problems = [...(openLoop ? [openLoop] : []), ...rounds.errors];
+      if (problems.length) setOutputOpen(true);
       setNotice(snapshot.revision === latest.current.revision
-        ? (openLoop ? { kind: 'error', text: `${builtText(result)} ${openLoop}` } : { kind: 'success', text: builtText(result) })
+        ? (problems.length ? { kind: 'error', text: `${builtText(result)} ${problems.join(' ')}` } : { kind: 'success', text: builtText(result) })
         : { kind: 'idle', text: 'Code changed during the build. Run again to update the preview.' });
     } catch (error) {
       const diagnostic: Diagnostic = error instanceof CadError
@@ -616,6 +623,7 @@ export function App() {
                   )}
                 </div>
                 {!stage && currentBuild && preview?.messages.map((message, index) => <div className="echo-message" key={index}>{message}</div>)}
+                {!stage && currentBuild && buildLog.map((message, index) => <div className="echo-message" key={`log${index}`}>{message}</div>)}
               </div>
             )}
           </section>
@@ -640,7 +648,7 @@ export function App() {
           <p>Change a dimension in the source and press <strong>Run</strong> or <kbd>Ctrl / ⌘ + Enter</kbd>. Inspect the rebuilt model and choose <strong>Export STEP</strong> to download it.</p>
           <dl>
             <dt>Shapes and operations</dt>
-            <dd>Everything OpenSCAD can render builds. Boxes, cylinders and spheres combined with <code>translate()</code>, <code>rotate()</code>, <code>mirror()</code>, <code>scale()</code>, <code>union()</code>, <code>difference()</code> and <code>intersection()</code> export with true curves, and so does <code>linear_extrude()</code> of circles, squares, polygons and their unions, differences, <code>hull()</code> and <code>offset()</code>, so holes are round in STEP. Any other part, such as <code>hull()</code> of solids, <code>rotate_extrude()</code>, <code>minkowski()</code>, <code>polyhedron()</code> or a twisted extrusion, is <em>faceted</em>: it shows and exports as a solid with flat faces, and the build output says which parts and why. Set <code>$fn</code> when you want visible facets.</dd>
+            <dd>Everything OpenSCAD can render builds. Boxes, cylinders and spheres combined with <code>translate()</code>, <code>rotate()</code>, <code>mirror()</code>, <code>scale()</code>, <code>union()</code>, <code>difference()</code> and <code>intersection()</code> export with true curves, and so does <code>linear_extrude()</code> of circles, squares, polygons and their unions, differences, <code>hull()</code> and <code>offset()</code>, so holes are round in STEP. Any other part, such as <code>hull()</code> of solids, <code>rotate_extrude()</code>, <code>minkowski()</code>, <code>polyhedron()</code> or a twisted extrusion, is <em>faceted</em>: it shows and exports as a solid with flat faces, and the build output says which parts and why. Set <code>$fn</code> only when you want flat sides: a cylinder or circle with <code>$fn</code> is a polygon in STEP, so its hole is not round, and the build output names the file and line. Leave <code>$fn</code> out for true cylinders.</dd>
             <dt>Parameters</dt>
             <dd>Use OpenSCAD variables, functions, local modules, loops and conditionals. Keep the <code>.scad</code> files for future edits.</dd>
             <dt>Assemblies</dt>

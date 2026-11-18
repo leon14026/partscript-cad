@@ -1,7 +1,7 @@
 import type { OcctKernel, ShapeHandle } from 'occt-wasm';
 import { partTag, readAssembly, singlePart, solvePose, type AssemblySpec, type Color } from './assembly.ts';
 import { assetFormat, contentHash, stemOf } from './assets.ts';
-import { childrenText, firstColor, hasShapes, needsCheck, parseCsg, taggedParts, unsupported, type CsgNode } from './csg.ts';
+import { childrenText, firstColor, flatRounds, hasShapes, needsCheck, parseCsg, taggedParts, unsupported, type CsgNode } from './csg.ts';
 import { flipTriangles, maxTriangles, meshBounds, meshVolume, parseBinaryStl, parseStl, toBinaryStl, toPartMesh } from './mesh.ts';
 import { CadError, type BuildStage, type MeasurePick, type ModelPreview, type PartMesh, type Pose, type ProjectAssets, type ProjectFiles } from './protocol.ts';
 import { measure } from './measure.ts';
@@ -211,6 +211,10 @@ export class ModelBuilder {
         solid = { kind: 'faceted', stl, mesh: { ...shown, volume, quality: 'faceted', reason } };
       }
       solid.color = firstColor(nodes);
+      if (solid.kind === 'exact') {
+        const rounds = flatRounds(nodes);
+        if (rounds.length) solid.mesh.flatRounds = rounds;
+      }
       this.#cache.set(key, solid);
       return { solid, fresh: true };
     } catch (error) {

@@ -293,6 +293,29 @@ with sync_playwright() as p:
         if 'partscript.json' not in inside or not same:
             problems.append(f'{name}: the project zip should hold the imported files unchanged: {inside}')
 
+    def check_round_notes():
+        # A cylinder with $fn is a polygon in STEP. 16 sides or more is an error that names the line, fewer is a log line.
+        name = 'round notes'
+        def build(source):
+            page.click('.cm-content')
+            page.keyboard.press('Control+A')
+            page.keyboard.type(source, delay=3)
+            page.keyboard.press('Control+Enter')
+            return wait_built()
+        notice = build('$fn = 48; difference() { cube([30, 30, 5]); translate([10, 10, -1]) cylinder(h = 7, d = 4); }')
+        if not page.locator('.output-message.error').count() or '48-sided polygon in STEP' not in notice or 'set on line 1' not in notice or 'Delete $fn' not in notice:
+            problems.append(f'{name}: a 48-sided hole should be an error that names line 1 and says to delete $fn: {notice!r}')
+        if 'Built one solid' not in notice:
+            problems.append(f'{name}: the part should still build: {notice!r}')
+        notice = build('cylinder(h = 5, d = 12, $fn = 6);')
+        logged = page.locator('.echo-message').all_inner_texts()
+        if page.locator('.output-message.error').count() or not any('6-sided polygon in STEP' in line for line in logged):
+            problems.append(f'{name}: a hexagon should be logged, not an error: {notice!r} {logged}')
+        notice = build('cylinder(h = 5, d = 12);')
+        if page.locator('.output-message.error').count() or page.locator('.echo-message').count():
+            problems.append(f'{name}: a true cylinder should say nothing about $fn: {notice!r}')
+        print(f'{name}: ok')
+
     def check_bad_files():
         # Open says what is wrong with a file it cannot use. A web page is not a CAD file, and a web page renamed .step is not a STEP.
         name = 'bad files'
@@ -430,6 +453,7 @@ with sync_playwright() as p:
     print(f'BOSL2 gear: {notice} (fetches: {len(library_fetches)})')
     check_import(names.index('Swivel arm assembly'))
     check_new_project()
+    check_round_notes()
     check_bad_files()
     browser.close()
 

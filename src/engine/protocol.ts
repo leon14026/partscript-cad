@@ -56,6 +56,8 @@ export interface PartMesh {
   quality: 'exact' | 'faceted';
   /** For a faceted part, the operation that made it so, for example "hull". */
   reason?: string;
+  /** For an exact part: the side count of each cylinder or circle that `$fn` made a flat-sided prism, so it is a polygon in STEP. Absent when there are none. */
+  flatRounds?: number[];
   /** For a part imported from a STEP file: how many solid bodies the file held. */
   bodies?: number;
 }

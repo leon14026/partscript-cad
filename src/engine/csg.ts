@@ -240,6 +240,31 @@ export function needsCheck(nodes: CsgNode[]): boolean {
 }
 
 /**
+ * The side count of every shape that the exact builder makes as a flat-sided prism
+ * because `$fn` is above zero: a cylinder with equal radii, and a circle inside an
+ * extrusion. These are polygons in STEP, so a hole made from one is not round.
+ * Only meaningful for a tree that unsupported() accepts. The sides are counted as
+ * solid.ts and flat.ts build them: at least 3, a fraction dropped.
+ */
+export function flatRounds(nodes: CsgNode[]): number[] {
+  const sides: number[] = [];
+  const walk = (list: CsgNode[]) => {
+    for (const node of list) {
+      const fn = node.named.get('$fn');
+      if (typeof fn === 'number' && fn > 0) {
+        const [bottom, top, radius] = [node.named.get('r1'), node.named.get('r2'), node.named.get('r')];
+        const prism = node.operation === 'cylinder' && typeof bottom === 'number' && bottom === top && bottom > 0;
+        const disc = node.operation === 'circle' && typeof radius === 'number' && radius > 0;
+        if (prism || disc) sides.push(Math.max(3, Math.trunc(fn)));
+      }
+      walk(node.children);
+    }
+  };
+  walk(nodes);
+  return sides;
+}
+
+/**
  * The first operation in the tree that the exact builder (solid.ts) cannot make,
  * or undefined when every node is a box, cylinder, sphere, extrusion, scaled or
  * rigid move or Boolean. Such a part is meshed by OpenSCAD instead. The name
