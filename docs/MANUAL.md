@@ -8,6 +8,8 @@ This manual is for a mechanical engineer who knows CAD and does not write code. 
 
 **The page.** The code is on the left and the model on the right. Under the code is the **Build output**, which says what was built, how long it took, and what went wrong if something did.
 
+**On a phone.** On a screen narrower than 711 pixels the page shows one pane at a time. It opens on the **Preview**, and the **Preview** and **Code** buttons under the header switch between the two. Choosing an example shows its preview, and a red mark on **Code** means the last build failed, so open it to read the message. The file buttons below (New, Open, Save file, Save project and the Manual) are behind the **⋯** button in the header. The joint sliders start folded into a **Joints** button at the bottom left of the preview, and a tap opens them. Drag one finger to turn the model, pinch to zoom, and drag two fingers to move it. Every button is at least 44 pixels square.
+
 **Buttons in the header.**
 
 - **New** replaces the project with one blank file, `part.scad`. If you have unsaved changes it asks first.
@@ -445,7 +447,7 @@ Click a second thing and the card also gives the distance and the angle between 
 
 - Values are in millimetres, square millimetres and degrees, to 0.001 and 0.01, each with a copy button.
 - They are read in the pose shown. Move a joint and the numbers follow. Playing a joint is off while a measurement is shown.
-- **Esc** clears the picks, and a second **Esc** leaves the tool.
+- **Esc** clears the picks, and a second **Esc** leaves the tool. On a phone, tap empty space or **Clear** to clear the picks, and tap **Measure** again to leave the tool. Tap where the manual says click.
 - A faceted part offers areas and corners only. Its edges and curves are made of triangles, so they are not measured.
 
 ## 9. Exact and faceted

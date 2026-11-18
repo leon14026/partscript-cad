@@ -1,6 +1,6 @@
 # Partscript CAD: build plan
 
-Written 16 November 2026 for whoever continues this project, human or model. It covers eleven phases. Phase 9 is done, and Phases 8, 10 and 11 are proposals. The owner set the order on 17 November 2026: 9, then 8, then 10. Phase 11 (collision detection) was added on 18 November 2026 and is not placed in that order yet.
+Written 16 November 2026 for whoever continues this project, human or model. It covers eleven phases. Phase 9 is done, Phase 8 is built except for the owner's phone timings, and Phases 10 and 11 are proposals. The owner set the order on 17 November 2026: 9, then 8, then 10. Phase 11 (collision detection) was added on 18 November 2026 and is not placed in that order yet.
 
 1. Any OpenSCAD geometry builds (faceted fallback)
 2. Many parts from one file (inline parts)
@@ -9,7 +9,7 @@ Written 16 November 2026 for whoever continues this project, human or model. It 
 5. Exact extrusions (true cylinders and flats in STEP)
 6. Import STEP and STL files, such as GrabCAD downloads
 7. Measure tool
-8. Phone viewer mode (proposed, not started)
+8. Phone viewer mode (layout built 18 November 2026; step 1, the owner's phone timings, is open)
 9. User manual: how to use the site and how the syntax works (done)
 10. Open an assembly STEP as separate parts (proposed, not started)
 11. Collision detection, in a pose and while a joint moves (proposed, not started)
@@ -41,6 +41,13 @@ Phases 1 and 2 come first, in that order. After them, phases 3 to 7 are independ
 - **Fixes after the owner tested phases 6 and 7 (17 November 2026).** (1) Esc was ignored while a joint slider had keyboard focus, so Measure stayed on; only text and number fields hold Esc now. Esc also takes two presses by design (the first clears the picks, the second leaves Measure), and the Measure hint now says so. (2) **Open** accepts only `.scad`, `.json`, `.zip`, `.step`, `.stp` and `.stl`. Any other file, such as a web page, is refused with a message that names the file and says what to open. Before, it was opened as OpenSCAD and gave "Parser error: syntax error". (3) The asset panel no longer says "STEP, exact geometry" or offers Show and Copy for a file that could not be read. (4) The not-closed STL message reads once: `... (3 open edges), so STEP has flat faces. A mesh that is not closed has no exact volume, and STEP export may fail.` Tests: still 125 (an assertion was added to the open-mesh test). `scripts/smoke.py` gained a slider-focus Esc check and a "bad files" check.
 - **`$fn` report (17 November 2026, from the owner's backlog item).** A `cylinder` with `$fn` above zero and equal radii, and a `circle` with `$fn` in an extrusion, are flat-sided prisms in an exact part, so STEP holds a polygon where a hole was meant while the build said "exact". `flatRounds(nodes)` in `csg.ts` counts them with the same rule as `solid.ts` and `flat.ts`, `build.ts` stores the side counts on the exact part's `PartMesh.flatRounds`, and `flatRoundNotes` in `summary.ts` writes the text. The owner chose the levels: always report, as an **error from 16 sides** (`flatRoundErrorSides`), only a **log line below 16** (a hexagon is often meant). An error does not stop the build: the part still shows and exports, like an open loop, and the output turns red with the text `part.scad: 6 cylinders or circles are 48-sided polygons in STEP, not true round (set on line 3). Delete $fn for true cylinders and round holes.` The line comes from searching the part's own file for `$fn` (the CSG dump has no line numbers); a value from an include or a library names no line. A part that is faceted for another reason is not reported, since its faceted reason already is. Tests: `test/rounds.test.ts` (11). `scripts/smoke.py` gained a "round notes" check.
 - **Phase 9, the user manual, is done (17 November 2026).** `docs/MANUAL.md` has twelve sections and 40 code examples. `scripts/manual.ts` is a small Markdown renderer that knows only what the manual uses and throws on anything else, so a construct it cannot draw is found by a test and not by a reader. `npm run manual` runs it through `scripts/build-manual.ts` and writes `public/manual.html`, which is not committed: `predev` and `prebuild` run it, Vite copies it into `dist/`, and the Pages workflow gets it from `npm run build`. No dependency was added. The header has a **Manual** link and the Help dialog links to the page. `test/manual.test.ts` (44 tests) reads the manual: it builds every `scad` block; a `scad error` block must fail with exactly the message printed under it; a `scad says` block must give exactly the build output printed under it (the faceted sentence and the `$fn` report); the gear and cam block must equal the shipped example; the `part()` and `joint()` signatures and every argument and default in the tables are compared with the prelude in `assembly.ts`; and the Limits table is compared with the constants in the code. `scripts/smoke.py` gained a "manual" check (the header link, the Help link, and the page with twelve numbered sections). Writing it found two weak messages (the backlog has them). The test also caught the manual's own first draft listing `child_at` and `child_rot` before `axis`: the order in the code is `... at, rot, axis, limits, value, child_at, child_rot, follow, ...`, so the manual shows that order and tells the reader to write the argument names.
+- **Phase 8, phone viewer mode, steps 2 to 6 are built (18 November 2026, not yet committed when this was written).** Step 1 (timings on the owner's phone) is still open. What exists, so later work reads true:
+  - **Narrow means `max-width: 710px`.** `.workspace` carries `data-view="preview|code"` and shows one pane (`.source-pane` or `.preview-pane`). A `.view-switch` nav (two 44 px buttons, Preview first) sits between the header and the workspace; the Code button shows a red alert while the last build failed. Choosing an example switches to the preview. In Preview view the `.output-message` is inside the hidden source pane, so a browser wait for it must use `state='attached'`.
+  - **Header.** New, Open, Save file, Save project and Manual are in a `.file-actions` menu opened by a `.more-button` (the three dots). On a wide screen `.more-menu` and `.file-actions` are `display: contents`, so nothing changes there. The hidden file input lives outside the menu. Esc or a tap outside closes it.
+  - **Preview.** The Joints panel starts collapsed on a narrow screen (`matchMedia` in `Viewport.tsx`) and opens as a sheet at most 58% of the preview high. `.view-angles` is a column at the right; the Parts menu is a full-width sheet; the Examples list scrolls. Every button, tab, summary, input and range is at least 44 px; number inputs use 16 px text so iOS does not zoom. `Drag to orbit · Scroll to zoom` is hidden, `Drag to orbit · Pinch to zoom` shows under `pointer: coarse`, and the Measure hint says tap.
+  - **Touch.** OrbitControls already gave pinch zoom and a two-finger pan. `viewer.ts` tracks the pointers that are down, so a pinch or two-finger gesture never picks in Measure, and `pointercancel` clears them. The joint slider clears its drag on `pointercancel`.
+  - **Checked with touch emulated, in WebGL and in software mode:** a pinch changes the picture (the model fills about 5 times the pixels when pinched out); a one-finger drag orbits; a tap on the rim of a hole in the Mounting plate reads Diameter 5; a pinch adds no pick; a finger drag on a joint slider and a tap on Play move the joint; no horizontal overflow at 390 and 360 px; no target under 44 px in the states the smoke test visits. `scripts/smoke.py` runs this as `check_phone` (390 x 844, touch). Targets inside a closed `<details>` are skipped, because Chrome still reports a box for them.
+  - **Not checked, needs a real phone:** how a fingertip lands against the fixed 6 px and 8 px picking radii near an edge, the feel of the slider, and the timings of step 1. A phone in landscape that is 711 px or wider still gets the desktop layout.
 - **Phase 11, collision detection, was added to the plan (18 November 2026).** Nothing is built. The owner asked for collision checks, and especially for joint motion. The plan replaces the backlog row "Collision check". Before writing it I probed the kernel and the owner's v3 machine (F30 to F32). What decided the design: `common` gives an exact overlap volume in 5 to 210 ms and says 0 for parts that only touch, while `distanceBetween` cannot tell touching from overlapping and takes up to 4.25 s a pair, so the exact check uses `common` and no clearance warning is planned. The preview mesh lies up to about 0.001 r inside a round surface, so a mesh test finds candidates and an exact test confirms them. The v3 machine already shows one overlap (frame and drum, 8.441 mm³) and four pairs that touch by design, so the phase needs a way to allow an overlap (`allow_overlap`).
 - **Phase 7: done and live since 17 November 2026 (commit `df6cb0a`, with phase 6).** Differences from the text of the phase below, so later work reads true:
   - New files `src/engine/measure.ts` (`measure(kernel, parts, picks)`: reads an exact part from its placed sub-shapes and a faceted part from its mesh; types `MeasurePick`, `Reading` and `MeasureResult` live in `protocol.ts`) and `src/picking.ts` (page side: `pickAt`, `castRay`, a bounding volume hierarchy per part, `toScreen`, `viewRay`; pure, so Node tests drive it). `PartMesh` gained `faceOf` (face or region per triangle), `edgeOf` (edge per line segment, empty for a faceted part) and `corners` (x, y, z of each corner). `ModelBuilder.measure(model, pose, picks)` wraps the call in `checkpoint` / `releaseSince`; the worker answers a `measure` command and the client has `measure(revision, pose, picks)`. `App.measurePicks` refuses while a build or an export runs, and a stale preview can still be measured, because the worker keeps the last build.
@@ -772,7 +779,7 @@ Drive the worker-side function directly with picks by index.
 
 ---
 
-## Phase 8. Phone viewer mode (proposed, not started)
+## Phase 8. Phone viewer mode (steps 2 to 6 built; step 1 needs the owner's phone)
 
 Asked by the owner on 17 November 2026: can the site have a phone version, or is it too much compute? Answer: the compute is not the obstacle. The page layout is. Do this phase only when the owner asks for it. Phone **editing** is not part of it.
 
@@ -780,7 +787,7 @@ Asked by the owner on 17 November 2026: can the site have a phone version, or is
 
 All of this is from a desktop Chrome with a software GPU. **Nothing was timed on a real phone.** A phone is likely 2 to 4 times slower on the CPU, but that is an estimate and the first step below replaces it with a number.
 
-- **Touch already works.** A one-finger drag in the preview orbits the model at 390 and 360 px wide with touch emulated (`touch-action: none` is set on the canvas). Not yet tried with two fingers (zoom) or a tap (Measure pick).
+- **Touch already works.** A one-finger drag in the preview orbits the model at 390 and 360 px wide with touch emulated (`touch-action: none` is set on the canvas). Two-finger zoom and a tap in Measure were tried in step 5 below and work.
 - **The page is too wide.** At a viewport of 390 px the page is 453 px wide, and at 360 px it is 415 px. The header (Export STEP is cut off), the source toolbar with the Examples menu, and the preview toolbar all run past the right edge. The stacked layout under `@media (max-width: 710px)` in `src/styles.css` is the starting point. It puts the editor above the preview, but the editor takes 62 dvh, so the model starts below the fold.
 - **Touch targets are small.** 34 of the 41 buttons on the page are under 40 px in width or height.
 - **The Joints panel covers about half of the 390 px preview.** The sliders and play buttons themselves work.
@@ -797,11 +804,11 @@ All of this is from a desktop Chrome with a software GPU. **Nothing was timed on
 ### Steps
 
 1. **Measure on real hardware.** Ask the owner to open the live site on his phone, load `swivel_arm`, the label fan folder zip and a NEMA 17 STEP, and report load time, build time and whether the tab survives. Record the numbers in section 2 as new facts. Use them to decide whether a size limit or a warning is needed.
-2. Fix the horizontal overflow at 360 and 390 px (`.app-header`, `.source-toolbar`, `.preview-toolbar`). Acceptance for this step is `document.documentElement.scrollWidth <= clientWidth`.
-3. Add the Code / Preview toggle under 710 px. Preview is the default.
-4. Raise touch targets to at least 44 px under 710 px. Collapse the Joints panel.
-5. Check two-finger pinch zoom and a tap for Measure picking. `src/picking.ts` is CPU picking, so it should work, but it is untested on touch.
-6. Add a `scripts/smoke.py` check at a 390 x 844 viewport with touch: no horizontal overflow, the toggle switches, a joint slider moves a part.
+2. (Done.) Fix the horizontal overflow at 360 and 390 px (`.app-header`, `.source-toolbar`, `.preview-toolbar`). Acceptance for this step is `document.documentElement.scrollWidth <= clientWidth`.
+3. (Done.) Add the Code / Preview toggle under 710 px. Preview is the default.
+4. (Done.) Raise touch targets to at least 44 px under 710 px. Collapse the Joints panel.
+5. (Done.) Check two-finger pinch zoom and a tap for Measure picking. The picking is in `viewer.ts`. A pinch was picking by accident, so it now ignores a gesture with two or more fingers down.
+6. (Done, `check_phone`.) Add a `scripts/smoke.py` check at a 390 x 844 viewport with touch: no horizontal overflow, the toggle switches, a joint slider moves a part.
 
 ### Tests
 
@@ -810,9 +817,9 @@ No engine change, so no new engine tests. The browser smoke test carries the che
 ### Acceptance
 
 - [ ] The owner has opened the live site on a phone and reported the timings from step 1.
-- [ ] No horizontal scrolling at 360 and 390 px (smoke test, both modes).
-- [ ] The model is on screen without scrolling, joints move, Play runs, Measure picks a face by tap.
-- [ ] Tests pass and `scripts/smoke.py` passes in both modes.
+- [x] No horizontal scrolling at 360 and 390 px (smoke test, both modes).
+- [x] The model is on screen without scrolling, joints move, Play runs, Measure picks a face by tap (emulated touch, both modes; the owner's own phone is the real test).
+- [x] Tests pass and `scripts/smoke.py` passes in both modes.
 
 **Out of scope:** editing code on a phone, a native app, offline install (a PWA is a possible later step), and anything that changes the engine.
 

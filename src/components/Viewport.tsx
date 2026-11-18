@@ -60,7 +60,7 @@ function JointControl({ joint, value, linked, playing, locked, onChange, onPlay 
       </span>
       <input id={id} type="range" min={low} max={high} step="any" value={value} disabled={low === high}
         onChange={(event) => onChange(event.currentTarget.valueAsNumber, true)}
-        onPointerUp={() => onChange(value, false)} onKeyUp={() => onChange(value, false)} onBlur={() => onChange(value, false)}/>
+        onPointerUp={() => onChange(value, false)} onPointerCancel={() => onChange(value, false)} onKeyUp={() => onChange(value, false)} onBlur={() => onChange(value, false)}/>
       <span className="joint-limits"><span>{measure.format(low)}{unit}</span><span>{measure.format(high)}{unit}</span></span>
     </div>
   );
@@ -106,7 +106,8 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
   const [grid, setGrid] = useState(true);
   const [edges, setEdges] = useState(true);
   const [angle, setAngle] = useState<ViewAngle | null>('iso');
-  const [jointsOpen, setJointsOpen] = useState(true);
+  // On a narrow screen the panel starts as one row, so it does not cover the model.
+  const [jointsOpen, setJointsOpen] = useState(() => !window.matchMedia('(max-width: 710px)').matches);
   const [playing, setPlaying] = useState<string | null>(null);
   // Parts left out of the preview, by name. The STEP export still holds every part.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
@@ -333,12 +334,12 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
               </div>
             </details>
           )}
-          <button className="view-tool" type="button" disabled={!model} aria-pressed={measuring}
+          <button className="view-tool" type="button" disabled={!model} aria-pressed={measuring} aria-label="Measure"
             title={measuring ? 'Leave Measure (Esc)' : 'Measure: click a face, an edge or a corner. Click two to read the distance and angle between them.'}
             onClick={() => setMeasuring(!measuring)}><Ruler size={16}/><span>Measure</span></button>
           <span className="view-tool-divider" />
-          <button className="view-tool" type="button" title="Toggle grid and axes" aria-pressed={grid} onClick={() => setGrid(!grid)}><Grid3X3 size={16}/><span>Grid</span></button>
-          <button className="view-tool" type="button" title="Toggle part edges" aria-pressed={edges} onClick={() => setEdges(!edges)}><Layers2 size={16}/><span>Edges</span></button>
+          <button className="view-tool" type="button" title="Toggle grid and axes" aria-label="Grid and axes" aria-pressed={grid} onClick={() => setGrid(!grid)}><Grid3X3 size={16}/><span>Grid</span></button>
+          <button className="view-tool" type="button" title="Toggle part edges" aria-label="Part edges" aria-pressed={edges} onClick={() => setEdges(!edges)}><Layers2 size={16}/><span>Edges</span></button>
           <span className="view-tool-divider" />
           <button className="view-tool" type="button" title="Fit model to view" aria-label="Fit model to view" onClick={() => controller.current?.fit()}><Expand size={16}/></button>
         </div>
@@ -359,7 +360,10 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
               <Ruler size={14}/><strong>Measure</strong>
               <button type="button" className="measure-clear" disabled={!picks.length} onClick={() => setPicks([])}><X size={12}/> Clear</button>
             </header>
-            {!picks.length && <p className="measure-hint">Click a face, an edge or a corner. Click a second one to read the distance and angle between them. Esc clears the picks, and a second Esc leaves Measure.</p>}
+            {!picks.length && <p className="measure-hint">
+              <span className="help-mouse">Click a face, an edge or a corner. Click a second one to read the distance and angle between them. Esc clears the picks, and a second Esc leaves Measure.</span>
+              <span className="help-touch">Tap a face, an edge or a corner. Tap a second one to read the distance and angle between them. Tap empty space, or Clear, to start again. Tap Measure to leave it.</span>
+            </p>}
             {picks.length === 1 && !result && !measureError && <p className="measure-hint">Reading…</p>}
             {result?.items.map((item, i) => (
               <div className="measure-item" key={i}>
@@ -379,7 +383,7 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
           </section>
         )}
         {joints.length > 0 && !graphicsFailed && (
-          <section className="joints" aria-label="Joints">
+          <section className={`joints${jointsOpen ? ' open' : ''}`} aria-label="Joints">
             <header>
               <button type="button" className="joints-toggle" aria-expanded={jointsOpen} onClick={() => setJointsOpen(!jointsOpen)}>
                 Joints <span>{joints.length}</span>
@@ -431,7 +435,7 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
           ))}
           <span className="unit">mm</span>
         </div>
-        <div className="preview-help" title={software ? 'Software preview uses the CPU for drawing.' : undefined}><Mouse size={13} /> <span>Drag to orbit · Scroll to zoom</span></div>
+        <div className="preview-help" title={software ? 'Software preview uses the CPU for drawing.' : undefined}><Mouse size={13} /> <span className="help-mouse">Drag to orbit · Scroll to zoom</span><span className="help-touch">Drag to orbit · Pinch to zoom</span></div>
       </footer>
     </section>
   );

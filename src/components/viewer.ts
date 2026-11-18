@@ -445,6 +445,9 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
   let hoverFrame = 0;
   let hoverPoint: [number, number] | undefined;
   let pressed: { x: number; y: number } | undefined;
+  // Every finger or button that is down. A second finger makes the gesture a pinch or a pan, which never picks.
+  const down = new Set<number>();
+  let gesture = false;
   const onHover = (event: PointerEvent) => {
     if (!measureHooks || event.buttons) return;
     hoverPoint = pointerAt(event);
@@ -466,19 +469,30 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
     refreshMarks();
   };
   const onPress = (event: PointerEvent) => {
+    down.add(event.pointerId);
+    if (down.size > 1) gesture = true;
     pressed = event.button === 0 ? { x: event.clientX, y: event.clientY } : undefined;
   };
   const onRelease = (event: PointerEvent) => {
+    down.delete(event.pointerId);
     const start = pressed;
+    const multi = gesture;
     pressed = undefined;
-    // A drag orbits. Only a click that stayed put picks.
-    if (!measureHooks || !start || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) return;
+    if (!down.size) gesture = false;
+    // A drag orbits and two fingers zoom. Only a click or a tap that stayed put picks.
+    if (!measureHooks || multi || !start || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) return;
     measureHooks.onPick(hitAt(...pointerAt(event)));
+  };
+  const onCancel = (event: PointerEvent) => {
+    down.delete(event.pointerId);
+    pressed = undefined;
+    if (!down.size) gesture = false;
   };
   canvas.addEventListener('pointermove', onHover);
   canvas.addEventListener('pointerleave', onLeave);
   canvas.addEventListener('pointerdown', onPress);
   canvas.addEventListener('pointerup', onRelease);
+  canvas.addEventListener('pointercancel', onCancel);
 
   const onLost = (event: Event) => {
     event.preventDefault();
@@ -549,6 +563,7 @@ export function createViewer(host: HTMLElement, onOrbit: () => void, onGraphicsE
       canvas.removeEventListener('pointerleave', onLeave);
       canvas.removeEventListener('pointerdown', onPress);
       canvas.removeEventListener('pointerup', onRelease);
+      canvas.removeEventListener('pointercancel', onCancel);
       clearOverlay();
       dotTexture?.dispose();
       resize.disconnect();

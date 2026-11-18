@@ -5,6 +5,7 @@ Usage:  npm run build && python3 scripts/smoke.py [--software] [--chrome /path/t
 --software hides WebGL so the CPU-drawn preview is used.
 Needs Python Playwright (pip install playwright) and a Chrome or Chromium binary.
 Writes screenshots to .test-output/ and exits 1 on a failed build or a console error.
+It also opens the page as a phone (390 x 844 with touch) and checks the narrow layout.
 """
 import argparse
 import contextlib
@@ -391,6 +392,144 @@ with sync_playwright() as p:
             problems.append(f'{name}: the + should add a tab to the new project: {tabs}')
         print(f'new project: {notice}')
 
+    def check_phone():
+        # The page as a phone sees it: one pane at a time, nothing wider than the screen, targets a thumb can hit, and a joint
+        # slider that a finger can drag. A second context, so the desktop page above is left as it is.
+        name = 'phone'
+        phone = browser.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=2, has_touch=True, is_mobile=True)
+        if args.software:
+            phone.add_init_script("const g = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (t, ...a) { return /webgl/.test(t) ? null : g.call(this, t, ...a); };")
+        tap = phone.new_page()
+        tap.on('console', lambda m: problems.append(f'console ({name}): {m.text[:300]}') if m.type == 'error' else None)
+        tap.on('pageerror', lambda e: problems.append(f'page error ({name}): {str(e)[:300]}'))
+        tap.goto(url)
+        # In the Preview view the build message sits in the hidden source pane, so wait for it to exist, not to be visible.
+        tap.wait_for_selector('.output-message.success, .output-message.error', state='attached', timeout=120000)
+        tap.wait_for_timeout(500)
+        suffix = 'software-' if args.software else ''
+
+        def layout(state):
+            # What is wider than the screen, and which buttons, inputs and links are smaller than 44 px. A closed <details>
+            # keeps its content out of reach, so its boxes are not targets.
+            found = tap.evaluate("""() => {
+              const vw = document.documentElement.clientWidth, over = [], small = [];
+              const label = (el) => (el.getAttribute('aria-label') || el.title || el.textContent || el.className || el.tagName).toString().trim().slice(0, 24);
+              for (const el of document.querySelectorAll('body *')) {
+                const r = el.getBoundingClientRect(), style = getComputedStyle(el);
+                if (!r.width || style.visibility === 'hidden' || el.closest('.cm-editor, .visually-hidden')) continue;
+                if (r.right > vw + 0.5 && style.position !== 'fixed') over.push(label(el));
+                if (!el.matches('button, summary, a, input:not([type=file]), select')) continue;
+                if (el.closest('details:not([open])') && !el.matches('summary')) continue;
+                const target = el.matches('input[type=checkbox]') ? (el.closest('label') || el) : el;
+                if (target.closest('p, li') && target.matches('a')) continue;   // a link inside a sentence is not a button
+                const box = target.getBoundingClientRect();
+                if (box.width < 43.5 || box.height < 43.5) small.push(`${label(target)} ${Math.round(box.width)}x${Math.round(box.height)}`);
+              }
+              return { wide: document.documentElement.scrollWidth > vw, over: [...new Set(over)].slice(0, 6), small: [...new Set(small)].slice(0, 8) };
+            }""")
+            if found['wide'] or found['over']:
+                problems.append(f'{name} ({state}): the page is wider than a 390 px screen: {found["over"]}')
+            if found['small']:
+                problems.append(f'{name} ({state}): targets under 44 px: {found["small"]}')
+
+        # Preview first, with the Code pane out of the way.
+        if tap.locator('.workspace').get_attribute('data-view') != 'preview' or tap.locator('.source-pane').is_visible() or not tap.locator('.preview-pane').is_visible():
+            problems.append(f'{name}: a phone should open on the preview with the code pane hidden')
+        layout('preview')
+
+        # The Joints sheet opens, and its slider moves a joint and the picture when a finger drags it.
+        if tap.locator('.joints.open').count():
+            problems.append(f'{name}: the Joints panel should start closed on a phone')
+        tap.locator('.joints-toggle').tap()
+        tap.wait_for_selector('.joints.open')
+        layout('joints open')
+        slider = tap.locator('.joints input[type=range]:not([disabled])').first
+        before_value, before_picture = tap.locator('.joint-value input').first.input_value(), tap.locator('.canvas-host canvas').screenshot()
+        box = slider.bounding_box()
+        client = phone.new_cdp_session(tap)
+        def finger(kind, x):
+            client.send('Input.dispatchTouchEvent', {'type': kind, 'touchPoints': [] if kind == 'touchEnd' else [{'x': x, 'y': box['y'] + box['height'] / 2, 'id': 0}]})
+        low, high = float(slider.get_attribute('min')), float(slider.get_attribute('max'))
+        thumb = box['x'] + 12 + (box['width'] - 24) * (float(slider.input_value()) - low) / (high - low)
+        goal = box['x'] + box['width'] * (0.85 if thumb < box['x'] + box['width'] / 2 else 0.15)
+        finger('touchStart', thumb)
+        for step in range(1, 9):
+            finger('touchMove', thumb + (goal - thumb) * step / 8)
+            tap.wait_for_timeout(30)
+        finger('touchEnd', goal)
+        tap.wait_for_timeout(500)
+        after_value, after_picture = tap.locator('.joint-value input').first.input_value(), tap.locator('.canvas-host canvas').screenshot()
+        if before_value == after_value or before_picture == after_picture:
+            problems.append(f'{name}: dragging the first joint slider with a finger should change its value and the picture: {before_value} -> {after_value}')
+        # Play moves the same joint by itself, and a second tap stops it.
+        resting = tap.locator('.joint-value input').first.input_value()
+        tap.locator('.joint-play:not([disabled])').first.tap()
+        tap.wait_for_timeout(900)
+        playing = tap.locator('.joint-value input').first.input_value()
+        tap.locator('.joint-play:not([disabled])').first.tap()
+        if resting == playing:
+            problems.append(f'{name}: tapping Play should move the first joint: {resting} -> {playing}')
+        tap.screenshot(path=str(shots / f'smoke-{suffix}phone-joints.png'))
+        tap.locator('.joints-toggle').tap()
+
+        # The menu behind the three dots holds the file actions, and it closes after one is chosen.
+        tap.locator('.more-button').tap()
+        if not tap.locator('.file-actions.open').count() or tap.locator('.file-actions button').count() < 4:
+            problems.append(f'{name}: the three-dots menu should open with the file actions')
+        layout('more menu')
+        tap.keyboard.press('Escape')
+        if tap.locator('.file-actions.open').count():
+            problems.append(f'{name}: Esc should close the three-dots menu')
+
+        # Code and Preview switch panes.
+        tap.locator('.view-switch button', has_text='Code').tap()
+        tap.wait_for_timeout(300)
+        if tap.locator('.workspace').get_attribute('data-view') != 'code' or tap.locator('.preview-pane').is_visible() or not tap.locator('.cm-content').is_visible():
+            problems.append(f'{name}: the Code button should show the code and hide the preview')
+        layout('code')
+        tap.screenshot(path=str(shots / f'smoke-{suffix}phone-code.png'))
+        tap.locator('summary[aria-label="Examples"]').tap()
+        layout('examples open')
+        tap.locator('.examples-popover button').nth(names.index('Mounting plate')).tap()
+        tap.wait_for_timeout(200)
+        tap.wait_for_selector('.output-message.success, .output-message.error', state='attached', timeout=120000)
+        if tap.locator('.workspace').get_attribute('data-view') != 'preview':
+            problems.append(f'{name}: choosing an example should switch to the preview')
+
+        # Measure by tapping: a hole's rim reads its diameter, and a pinch does not add a pick.
+        tap.locator('button[title="Top view"]').tap()
+        tap.locator('.preview-tools button', has_text='Measure').tap()
+        tap.wait_for_timeout(300)
+        layout('measure on')
+        canvas = tap.locator('.canvas-host canvas').bounding_box()
+        k = canvas['height'] / (2 * (math.hypot(80, 40, 6) / 2) * 1.19 / min(canvas['width'] / canvas['height'], 1))
+        tap.touchscreen.tap(canvas['x'] + canvas['width'] / 2 + (8 - 40) * k, canvas['y'] + canvas['height'] / 2 - (10.5 - 20) * k)
+        tap.wait_for_timeout(1200)
+        values = {row.locator('dt').inner_text(): row.locator('dd span').inner_text() for row in tap.locator('.measure-card .reading').all()}
+        if values.get('Diameter') != '5':
+            problems.append(f'{name}: a tap on the rim of a hole in the plate should read Diameter 5: {values}')
+        picks = tap.locator('.measure-item').count()
+        cx, cy = canvas['x'] + canvas['width'] / 2, canvas['y'] + canvas['height'] / 2 + 120
+        client.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': [{'x': cx - 30, 'y': cy, 'id': 0}, {'x': cx + 30, 'y': cy, 'id': 1}]})
+        for step in range(1, 7):
+            client.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': cx - 30 - step * 10, 'y': cy, 'id': 0}, {'x': cx + 30 + step * 10, 'y': cy, 'id': 1}]})
+            tap.wait_for_timeout(30)
+        client.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+        tap.wait_for_timeout(500)
+        if tap.locator('.measure-item').count() != picks:
+            problems.append(f'{name}: a two-finger pinch should zoom, not pick: {picks} -> {tap.locator(".measure-item").count()}')
+        tap.screenshot(path=str(shots / f'smoke-{suffix}phone-measure.png'))
+        tap.locator('.preview-tools button', has_text='Measure').tap()
+
+        # The narrowest phones still fit.
+        tap.set_viewport_size({'width': 360, 'height': 740})
+        tap.wait_for_timeout(300)
+        found = tap.evaluate("() => document.documentElement.scrollWidth > document.documentElement.clientWidth")
+        if found:
+            problems.append(f'{name}: the page is wider than a 360 px screen')
+        phone.close()
+        print(f'{name}: ok')
+
     page.click('summary[aria-label="Examples"]')
     names = [item.inner_text() for item in page.locator('.examples-popover button strong').all()]
     page.keyboard.press('Escape')
@@ -483,6 +622,7 @@ with sync_playwright() as p:
     check_round_notes()
     check_manual()
     check_bad_files()
+    check_phone()
     browser.close()
 
 server.shutdown()

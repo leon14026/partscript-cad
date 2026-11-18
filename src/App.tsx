@@ -1,4 +1,4 @@
-import { BookOpen, Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, FileBox, FileCode2, FilePlus, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
+import { BookOpen, Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, Ellipsis, FileBox, FileCode2, FilePlus, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { CodeEditor, type EditorControl } from './components/CodeEditor.tsx';
 import { AssetPanel } from './components/AssetPanel.tsx';
@@ -114,6 +114,7 @@ export function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const examplesMenu = useRef<HTMLDetailsElement>(null);
   const help = useRef<HTMLDialogElement>(null);
+  const moreMenu = useRef<HTMLDivElement>(null);
   const [caret, setCaret] = useState({ line: 1, column: 1, count: 1 });
   const [stage, setStage] = useState<BuildStage | null>(null);
   const [preview, setPreview] = useState<ModelPreview>();
@@ -127,6 +128,10 @@ export function App() {
   const [autosaveReady, setAutosaveReady] = useState(false);
   const [storage, setStorage] = useState<'saving' | 'saved' | 'unavailable'>('saving');
   const [outputOpen, setOutputOpen] = useState(true);
+  // On a narrow screen one pane shows at a time. The preview comes first, and the code is behind a toggle.
+  const [view, setView] = useState<'preview' | 'code'>('preview');
+  // On a narrow screen the file actions sit in a menu.
+  const [moreOpen, setMoreOpen] = useState(false);
   const currentBuild = builtRevision === doc.revision;
   const canExport = currentBuild && stage === null;
   const activeFile = doc.files.find((file) => file.name === doc.active) ?? doc.files[0];
@@ -492,6 +497,7 @@ export function App() {
     const closeExamples = (event: PointerEvent) => {
       const menu = examplesMenu.current;
       if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+      if (event.target instanceof Node && moreMenu.current && !moreMenu.current.contains(event.target)) setMoreOpen(false);
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('pointerdown', closeExamples);
@@ -512,26 +518,38 @@ export function App() {
           <div><h1>Partscript<span> CAD</span></h1><span className="brand-subtitle">Parametric workbench</span></div>
         </div>
         <div className="app-actions">
-          <button className="button button-quiet file-action" type="button" title="Start a new project with one blank file. Add more files with the + beside the tabs." aria-label="New project" disabled={!!stage} onClick={newProject}>
-            <FilePlus size={17}/><span>New</span>
-          </button>
-          <button className="button button-quiet file-action" type="button" title="Open SCAD files, STEP or STL files to import, or a saved project (.zip)" aria-label="Open" disabled={!!stage} onClick={() => fileInput.current?.click()}>
-            <FolderOpen size={17}/><span>Open</span>
-          </button>
+          <div className="more-menu" ref={moreMenu} onKeyDown={(event) => {
+            if (event.key === 'Escape' && moreOpen) {
+              setMoreOpen(false);
+              moreMenu.current?.querySelector<HTMLElement>('.more-button')?.focus();
+            }
+          }}>
+            <button className="button button-quiet more-button" type="button" title="New, Open, Save and the manual" aria-label="Files and manual" aria-expanded={moreOpen} aria-controls="file-actions" onClick={() => setMoreOpen(!moreOpen)}>
+              <Ellipsis size={19}/>
+            </button>
+            <div className={`file-actions${moreOpen ? ' open' : ''}`} id="file-actions" onClick={() => setMoreOpen(false)}>
+              <button className="button button-quiet file-action" type="button" title="Start a new project with one blank file. Add more files with the + beside the tabs." aria-label="New project" disabled={!!stage} onClick={newProject}>
+                <FilePlus size={17}/><span>New</span>
+              </button>
+              <button className="button button-quiet file-action" type="button" title="Open SCAD files, STEP or STL files to import, or a saved project (.zip)" aria-label="Open" disabled={!!stage} onClick={() => fileInput.current?.click()}>
+                <FolderOpen size={17}/><span>Open</span>
+              </button>
+              <button className="button button-quiet file-action" type="button" title="Download the open file as it is" aria-label="Save file" onClick={saveScad}>
+                <FileCode2 size={17}/><span>Save file</span>
+              </button>
+              <button className="button button-quiet file-action" type="button" title="Download every file, imported ones included, as one zip to share or reopen (Ctrl/Cmd+S)" aria-label="Save project" onClick={() => void saveProject()}>
+                <FolderArchive size={17}/><span>Save project</span>
+              </button>
+              <a className="button button-quiet file-action" href="manual.html" target="_blank" rel="noopener" title="Open the manual in a new tab: how to use the page, and how part() and joint() work" aria-label="Manual">
+                <BookOpen size={17}/><span>Manual</span>
+              </a>
+            </div>
+          </div>
           <input ref={fileInput} type="file" multiple className="visually-hidden" tabIndex={-1} aria-label="Choose SCAD files, STEP or STL files, or a project file" accept=".scad,.json,.zip,.step,.stp,.stl,text/plain,application/json,application/zip" onChange={(event) => {
             const list = [...(event.currentTarget.files ?? [])];
             event.currentTarget.value = '';
             if (list.length) void openFiles(list);
           }}/>
-          <button className="button button-quiet file-action" type="button" title="Download the open file as it is" aria-label="Save file" onClick={saveScad}>
-            <FileCode2 size={17}/><span>Save file</span>
-          </button>
-          <button className="button button-quiet file-action" type="button" title="Download every file, imported ones included, as one zip to share or reopen (Ctrl/Cmd+S)" aria-label="Save project" onClick={() => void saveProject()}>
-            <FolderArchive size={17}/><span>Save project</span>
-          </button>
-          <a className="button button-quiet file-action" href="manual.html" target="_blank" rel="noopener" title="Open the manual in a new tab: how to use the page, and how part() and joint() work" aria-label="Manual">
-            <BookOpen size={17}/><span>Manual</span>
-          </a>
           <span className="action-divider" />
           {stage ? (
             <button className="button button-run" type="button" onClick={() => engine.cancel()}><Square size={14}/><span>Cancel</span></button>
@@ -540,13 +558,21 @@ export function App() {
               <Play size={15} fill="currentColor" strokeWidth={1.7}/><span>Run</span><kbd className="run-key">Ctrl ↵</kbd>
             </button>
           )}
-          <button className="button button-step" type="button" disabled={!canExport} title={canExport ? (preview?.isAssembly ? 'Download the assembly as STEP, in the pose shown' : 'Download the current solid as STEP') : 'Run the current code to enable STEP export'} onClick={() => void exportStep()}>
+          <button className="button button-step" type="button" aria-label="Export STEP" disabled={!canExport} title={canExport ? (preview?.isAssembly ? 'Download the assembly as STEP, in the pose shown' : 'Download the current solid as STEP') : 'Run the current code to enable STEP export'} onClick={() => void exportStep()}>
             {stage === 'export' ? <LoaderCircle className="spin" size={16}/> : <Download size={16}/>}<span>Export STEP</span>
           </button>
         </div>
       </header>
 
-      <main className="workspace">
+      <nav className="view-switch" aria-label="Show the code or the preview">
+        <button type="button" aria-pressed={view === 'preview'} onClick={() => setView('preview')}><Box size={17}/><span>Preview</span></button>
+        <button type="button" aria-pressed={view === 'code'} onClick={() => setView('code')}>
+          <CodeXml size={17}/><span>Code</span>
+          {!stage && notice.kind === 'error' && <TriangleAlert className="view-switch-alert" size={15} aria-label="The build failed"/>}
+        </button>
+      </nav>
+
+      <main className="workspace" data-view={view}>
         <section className="source-pane" aria-label="SCAD editor">
           <div className="source-toolbar">
             <div className="file-tabs" role="tablist" aria-label="Project files">
@@ -582,6 +608,7 @@ export function App() {
                 {exampleProjects.map((example) => (
                   <button type="button" disabled={!!stage} key={example.open} onClick={() => {
                     if (examplesMenu.current) examplesMenu.current.open = false;
+                    setView('preview');
                     const files = Object.entries(example.files).map(([name, source]) => ({ name, source }));
                     replaceDocument({ files, active: example.open, entry: files.length > 1 ? example.open : null });
                   }}>
@@ -669,6 +696,8 @@ export function App() {
             <dd>Choose <strong>Open</strong> and pick a <code>.step</code>, <code>.stp</code> or <code>.stl</code> file, such as a motor or a bearing from GrabCAD or a supplier. It becomes a tab you can look at with <strong>Show on its own</strong> and measure. Use it as a part with <code>part("motor", "motor.step");</code> and connect it with joints like any other part. A STEP keeps its true curves and exports as it came. An STL is a mesh with no units, read as millimetres, so it exports with flat faces. Inside a <code>.scad</code> file, <code>import("bracket.stl");</code> reads an STL of the project too. Files from a CAD program's own format (<code>.sldprt</code>, <code>.ipt</code>, <code>.f3d</code>, <code>.x_t</code>) and IGES files cannot be read, so download or export the STEP version. One file can be up to 40 MB and a project up to 120 MB of them.</dd>
             <dt>Sharing values</dt>
             <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>New</strong> starts a blank project with one file, and the <strong>+</strong> beside the tabs adds more. <strong>Save project</strong> downloads every file, imported ones included, as one zip a teammate can open.</dd>
+            <dt>On a phone</dt>
+            <dd>The page shows the preview or the code, one at a time: use the <strong>Preview</strong> and <strong>Code</strong> buttons under the header. New, Open, Save and the manual are behind <strong>⋯</strong>. Drag to turn the model, pinch to zoom, and tap in <strong>Measure</strong> where a mouse would click.</dd>
             <dt>Model limits</dt>
             <dd>In millimetres. A part must have volume, and a file that draws only flat 2D shapes needs <code>linear_extrude()</code>. Collision checks are unavailable. Libraries other than BOSL2 are unavailable in this version, and <code>text()</code> fails because no fonts are bundled. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
           </dl>
