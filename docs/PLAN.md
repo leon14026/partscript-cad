@@ -1,6 +1,6 @@
 # Partscript CAD: build plan
 
-Written 16 November 2026 for whoever continues this project, human or model. It covers seven phases:
+Written 16 November 2026 for whoever continues this project, human or model. It covers seven phases, and Phase 8 is a proposal that follows them:
 
 1. Any OpenSCAD geometry builds (faceted fallback)
 2. Many parts from one file (inline parts)
@@ -9,6 +9,7 @@ Written 16 November 2026 for whoever continues this project, human or model. It 
 5. Exact extrusions (true cylinders and flats in STEP)
 6. Import STEP and STL files, such as GrabCAD downloads
 7. Measure tool
+8. Phone viewer mode (proposed, not started)
 
 Phases 1 and 2 come first, in that order. After them, phases 3 to 7 are independent and can be done in any order. Each phase ends in a working, tested, releasable site.
 
@@ -757,6 +758,52 @@ Drive the worker-side function directly with picks by index.
 - [x] Measuring an imported STEP part works (`test/import.test.ts` reads a hole of an imported mounting plate as diameter 5; the smoke test picks a face on an imported STEP).
 
 **Out of scope:** dimensions that stay on screen, section views, mass and centre of gravity, drawings.
+
+---
+
+## Phase 8. Phone viewer mode (proposed, not started)
+
+Asked by the owner on 17 November 2026: can the site have a phone version, or is it too much compute? Answer: the compute is not the obstacle. The page layout is. Do this phase only when the owner asks for it. Phone **editing** is not part of it.
+
+### What was measured on 17 November 2026
+
+All of this is from a desktop Chrome with a software GPU. **Nothing was timed on a real phone.** A phone is likely 2 to 4 times slower on the CPU, but that is an estimate and the first step below replaces it with a number.
+
+- **Touch already works.** A one-finger drag in the preview orbits the model at 390 and 360 px wide with touch emulated (`touch-action: none` is set on the canvas). Not yet tried with two fingers (zoom) or a tap (Measure pick).
+- **The page is too wide.** At a viewport of 390 px the page is 453 px wide, and at 360 px it is 415 px. The header (Export STEP is cut off), the source toolbar with the Examples menu, and the preview toolbar all run past the right edge. The stacked layout under `@media (max-width: 710px)` in `src/styles.css` is the starting point. It puts the editor above the preview, but the editor takes 62 dvh, so the model starts below the fold.
+- **Touch targets are small.** 34 of the 41 buttons on the page are under 40 px in width or height.
+- **The Joints panel covers about half of the 390 px preview.** The sliders and play buttons themselves work.
+- **Engine size.** The OpenCascade kernel is a 21.3 MB file (`dist/assets/occt-wasm-*.wasm`, uncompressed on disk). It downloads once and the browser caches it. Mobile data will make the first load slow.
+- **Heavy files.** On desktop the full v3 fan folder assembly builds in about 13.5 s and exports a 48 MiB STEP in about 22.9 s (see Phase 5). A phone could hit the 60 s job limit on that file. Small parts and assemblies are not at risk. Phone browsers also kill a tab that uses too much memory, iPhones sooner than Android.
+
+### Design
+
+- **Viewer first.** On a narrow screen the page opens the preview, the joint sliders, the Play button, the Parts menu and Measure. The editor is behind a **Code** toggle, so the model is on screen straight away.
+- Open a saved project zip, or a draft that is already on the device, and look at it. Do not promise typing code on a phone.
+- Keep one codebase and one set of engine code. Only `App.tsx` layout, `Viewport.tsx` panels and `styles.css` change. Do not fork the engine for phones.
+- Joints panel: collapsed to one row by default, opened by a tap, so it does not cover the model.
+
+### Steps
+
+1. **Measure on real hardware.** Ask the owner to open the live site on his phone, load `swivel_arm`, the label fan folder zip and a NEMA 17 STEP, and report load time, build time and whether the tab survives. Record the numbers in section 2 as new facts. Use them to decide whether a size limit or a warning is needed.
+2. Fix the horizontal overflow at 360 and 390 px (`.app-header`, `.source-toolbar`, `.preview-toolbar`). Acceptance for this step is `document.documentElement.scrollWidth <= clientWidth`.
+3. Add the Code / Preview toggle under 710 px. Preview is the default.
+4. Raise touch targets to at least 44 px under 710 px. Collapse the Joints panel.
+5. Check two-finger pinch zoom and a tap for Measure picking. `src/picking.ts` is CPU picking, so it should work, but it is untested on touch.
+6. Add a `scripts/smoke.py` check at a 390 x 844 viewport with touch: no horizontal overflow, the toggle switches, a joint slider moves a part.
+
+### Tests
+
+No engine change, so no new engine tests. The browser smoke test carries the check (step 6). Run both modes.
+
+### Acceptance
+
+- [ ] The owner has opened the live site on a phone and reported the timings from step 1.
+- [ ] No horizontal scrolling at 360 and 390 px (smoke test, both modes).
+- [ ] The model is on screen without scrolling, joints move, Play runs, Measure picks a face by tap.
+- [ ] Tests pass and `scripts/smoke.py` passes in both modes.
+
+**Out of scope:** editing code on a phone, a native app, offline install (a PWA is a possible later step), and anything that changes the engine.
 
 ---
 
