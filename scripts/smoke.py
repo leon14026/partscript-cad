@@ -413,11 +413,13 @@ with sync_playwright() as p:
             # keeps its content out of reach, so its boxes are not targets.
             found = tap.evaluate("""() => {
               const vw = document.documentElement.clientWidth, over = [], small = [];
-              const label = (el) => (el.getAttribute('aria-label') || el.title || el.textContent || el.className || el.tagName).toString().trim().slice(0, 24);
+              const label = (el) => (el.getAttribute('aria-label') || el.title || el.textContent || el.getAttribute('class') || el.tagName).toString().trim().slice(0, 24);
+              // Something wider than the screen is fine inside a box that scrolls sideways and itself fits on the screen, like the tab strip.
+              const clipped = (el) => { for (let up = el.parentElement; up && up !== document.body; up = up.parentElement) { if (getComputedStyle(up).overflowX !== 'visible' && up.getBoundingClientRect().right <= vw + 0.5) return true; } return false; };
               for (const el of document.querySelectorAll('body *')) {
                 const r = el.getBoundingClientRect(), style = getComputedStyle(el);
                 if (!r.width || style.visibility === 'hidden' || el.closest('.cm-editor, .visually-hidden')) continue;
-                if (r.right > vw + 0.5 && style.position !== 'fixed') over.push(label(el));
+                if (r.right > vw + 0.5 && style.position !== 'fixed' && !clipped(el)) over.push(label(el));
                 if (!el.matches('button, summary, a, input:not([type=file]), select')) continue;
                 if (el.closest('details:not([open])') && !el.matches('summary')) continue;
                 const target = el.matches('input[type=checkbox]') ? (el.closest('label') || el) : el;
@@ -431,6 +433,12 @@ with sync_playwright() as p:
                 problems.append(f'{name} ({state}): the page is wider than a 390 px screen: {found["over"]}')
             if found['small']:
                 problems.append(f'{name} ({state}): targets under 44 px: {found["small"]}')
+
+        def plus_reachable(state):
+            # The + that adds a file has to be somewhere a finger can land: nothing may cover it or scroll it away.
+            reachable = tap.evaluate("() => { const box = document.querySelector('.file-add').getBoundingClientRect(); const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2); return !!(hit && hit.closest('.file-add')); }")
+            if not reachable:
+                problems.append(f'{name} ({state}): the + button that adds a file cannot be tapped')
 
         # Preview first, with the Code pane out of the way.
         if tap.locator('.workspace').get_attribute('data-view') != 'preview' or tap.locator('.source-pane').is_visible() or not tap.locator('.preview-pane').is_visible():
@@ -490,6 +498,7 @@ with sync_playwright() as p:
         if tap.locator('.workspace').get_attribute('data-view') != 'code' or tap.locator('.preview-pane').is_visible() or not tap.locator('.cm-content').is_visible():
             problems.append(f'{name}: the Code button should show the code and hide the preview')
         layout('code')
+        plus_reachable('six tabs in the swivel arm project')
         tap.screenshot(path=str(shots / f'smoke-{suffix}phone-code.png'))
         tap.locator('summary[aria-label="Examples"]').tap()
         layout('examples open')
@@ -537,6 +546,17 @@ with sync_playwright() as p:
         imported = [tab for tab in tap.locator('.file-tab-name').all_text_contents() if 'Kingroo' in tab]
         if len(imported) != 1 or not imported[0].endswith('.step'):
             problems.append(f'{name}: an upper-case .STEP with a non-Latin name should open as a .step tab: {imported}')
+
+        # With a long imported name in the strip the + is still there, and it adds a file that opens with its name showing.
+        tap.locator('.view-switch button', has_text='Code').tap()
+        tap.wait_for_timeout(300)
+        plus_reachable('a long imported file name')
+        tap.once('dialog', lambda dialog: dialog.accept('assembly.scad'))
+        tap.locator('.file-add').tap()
+        tap.wait_for_timeout(400)
+        shown = tap.evaluate("() => { const strip = document.querySelector('.file-tabs').getBoundingClientRect(), tab = document.querySelector('.file-tab.selected .file-tab-name'), box = tab.getBoundingClientRect(); return { name: tab.textContent, inside: box.left >= strip.left - 1 && box.left < strip.right - 60 }; }")
+        if shown['name'] != 'assembly.scad' or not shown['inside']:
+            problems.append(f'{name}: a file added with the + should open as the selected tab, in view: {shown}')
 
         # The narrowest phones still fit.
         tap.set_viewport_size({'width': 360, 'height': 740})

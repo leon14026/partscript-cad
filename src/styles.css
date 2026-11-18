@@ -359,7 +359,14 @@ h1, h2, p { margin: 0; }
   .source-pane, .preview-pane { border-radius: 8px; }
 
   .source-toolbar { flex-wrap: wrap; align-items: center; }
+  /* The tabs are one row that scrolls sideways, so a project of six files does not push the + out of a 100 px strip.
+     The + stays at the right edge whatever the scroll. */
+  .file-tabs { flex-wrap: nowrap; max-height: none; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; scroll-padding-inline: 8px 56px; }
+  .file-tabs::-webkit-scrollbar { display: none; }
   .file-tab, .file-tab-name { min-height: 44px; min-width: 0; }
+  .file-tab { max-width: none; }
+  .file-tab-name span { max-width: 16ch; }
+  .file-add { position: sticky; right: 0; z-index: 1; margin-left: 0; background: #f7f5ef; box-shadow: -10px 0 8px -2px #f7f5ef; }
   .file-tab-name span { overflow: hidden; text-overflow: ellipsis; }
   .file-tab-tools { gap: 0; padding-right: 2px; }
   .file-tab-tools button, .file-add { width: 44px; height: 44px; }

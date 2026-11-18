@@ -115,6 +115,7 @@ export function App() {
   const examplesMenu = useRef<HTMLDetailsElement>(null);
   const help = useRef<HTMLDialogElement>(null);
   const moreMenu = useRef<HTMLDivElement>(null);
+  const tabStrip = useRef<HTMLDivElement>(null);
   const [caret, setCaret] = useState({ line: 1, column: 1, count: 1 });
   const [stage, setStage] = useState<BuildStage | null>(null);
   const [preview, setPreview] = useState<ModelPreview>();
@@ -439,6 +440,12 @@ export function App() {
     setNotice({ kind: 'idle', text: 'Code changed. Run to update the preview.' });
   }
 
+  // Keep the open file's tab in view: the strip scrolls sideways on a phone, and a file that was just added lands at its end.
+  // The pane is hidden while the preview is shown, so the tab is brought into view again when the code comes back.
+  useEffect(() => {
+    tabStrip.current?.querySelector('.file-tab.selected')?.scrollIntoView({ block: 'nearest', inline: 'start' });
+  }, [doc.active, doc.files.length, view]);
+
   useEffect(() => {
     let disposed = false;
     async function start() {
@@ -578,7 +585,7 @@ export function App() {
       <main className="workspace" data-view={view}>
         <section className="source-pane" aria-label="SCAD editor">
           <div className="source-toolbar">
-            <div className="file-tabs" role="tablist" aria-label="Project files">
+            <div className="file-tabs" role="tablist" aria-label="Project files" ref={tabStrip}>
               {doc.files.map((file) => {
                 const selected = file.name === doc.active;
                 const pinned = file.name === doc.entry;
