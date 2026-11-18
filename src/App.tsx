@@ -132,6 +132,9 @@ export function App() {
   const [view, setView] = useState<'preview' | 'code'>('preview');
   // On a narrow screen the file actions sit in a menu.
   const [moreOpen, setMoreOpen] = useState(false);
+  // iOS greys out a file whose type it cannot match to the accept list, and it does not know .step or .stp, so a download from
+  // GrabCAD could not be chosen. On a touch screen the picker shows every file. openFiles still refuses anything that is not CAD.
+  const [anyFile] = useState(() => window.matchMedia('(pointer: coarse)').matches);
   const currentBuild = builtRevision === doc.revision;
   const canExport = currentBuild && stage === null;
   const activeFile = doc.files.find((file) => file.name === doc.active) ?? doc.files[0];
@@ -545,7 +548,7 @@ export function App() {
               </a>
             </div>
           </div>
-          <input ref={fileInput} type="file" multiple className="visually-hidden" tabIndex={-1} aria-label="Choose SCAD files, STEP or STL files, or a project file" accept=".scad,.json,.zip,.step,.stp,.stl,text/plain,application/json,application/zip" onChange={(event) => {
+          <input ref={fileInput} type="file" multiple className="visually-hidden" tabIndex={-1} aria-label="Choose SCAD files, STEP or STL files, or a project file" accept={anyFile ? undefined : '.scad,.json,.zip,.step,.stp,.stl,text/plain,application/json,application/zip'} onChange={(event) => {
             const list = [...(event.currentTarget.files ?? [])];
             event.currentTarget.value = '';
             if (list.length) void openFiles(list);
@@ -697,7 +700,7 @@ export function App() {
             <dt>Sharing values</dt>
             <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>New</strong> starts a blank project with one file, and the <strong>+</strong> beside the tabs adds more. <strong>Save project</strong> downloads every file, imported ones included, as one zip a teammate can open.</dd>
             <dt>On a phone</dt>
-            <dd>The page shows the preview or the code, one at a time: use the <strong>Preview</strong> and <strong>Code</strong> buttons under the header. New, Open, Save and the manual are behind <strong>⋯</strong>. Drag to turn the model, pinch to zoom, and tap in <strong>Measure</strong> where a mouse would click.</dd>
+            <dd>The page shows the preview or the code, one at a time: use the <strong>Preview</strong> and <strong>Code</strong> buttons under the header. New, Open, Save and the manual are behind <strong>⋯</strong>. <strong>Joints</strong> opens a strip under the model. Drag to turn the model, pinch to zoom, and tap in <strong>Measure</strong> where a mouse would click.</dd>
             <dt>Model limits</dt>
             <dd>In millimetres. A part must have volume, and a file that draws only flat 2D shapes needs <code>linear_extrude()</code>. Collision checks are unavailable. Libraries other than BOSL2 are unavailable in this version, and <code>text()</code> fails because no fonts are bundled. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
           </dl>

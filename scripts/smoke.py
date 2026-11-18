@@ -443,6 +443,9 @@ with sync_playwright() as p:
         tap.locator('.joints-toggle').tap()
         tap.wait_for_selector('.joints.open')
         layout('joints open')
+        room = tap.evaluate("() => { const host = document.querySelector('.canvas-host').getBoundingClientRect(), sheet = document.querySelector('.joints').getBoundingClientRect(); return { below: host.bottom - sheet.top, height: host.height }; }")
+        if room['below'] > 0.5 or room['height'] < 200:
+            problems.append(f'{name}: the open Joints sheet should leave the model its own 200 px or more above it, not cover it: {room}')
         slider = tap.locator('.joints input[type=range]:not([disabled])').first
         before_value, before_picture = tap.locator('.joint-value input').first.input_value(), tap.locator('.canvas-host canvas').screenshot()
         box = slider.bounding_box()
@@ -520,6 +523,20 @@ with sync_playwright() as p:
             problems.append(f'{name}: a two-finger pinch should zoom, not pick: {picks} -> {tap.locator(".measure-item").count()}')
         tap.screenshot(path=str(shots / f'smoke-{suffix}phone-measure.png'))
         tap.locator('.preview-tools button', has_text='Measure').tap()
+
+        # A download from GrabCAD: an upper-case .STEP with a name in another script. iOS greys out a file whose type is not in the
+        # accept list, so a touch screen must have no list, and a mouse still has one. Then the page must take the file.
+        if tap.evaluate("() => document.querySelector('input[type=file]').hasAttribute('accept')"):
+            problems.append(f'{name}: the file picker must show every file on a touch screen, or iOS greys out a .STEP')
+        if not page.evaluate("() => document.querySelector('input[type=file]').hasAttribute('accept')"):
+            problems.append(f'{name}: the file picker should still filter by type with a mouse')
+        with tap.expect_download() as download:
+            tap.locator('button[aria-label="Export STEP"]').tap()
+        tap.set_input_files('input[type=file]', files=[{'name': '\u0645\u0648\u0679\u0631 Kingroo-.STEP', 'mimeType': '', 'buffer': pathlib.Path(download.value.path()).read_bytes()}])
+        tap.wait_for_selector('.asset-panel', state='attached', timeout=10000)
+        imported = [tab for tab in tap.locator('.file-tab-name').all_text_contents() if 'Kingroo' in tab]
+        if len(imported) != 1 or not imported[0].endswith('.step'):
+            problems.append(f'{name}: an upper-case .STEP with a non-Latin name should open as a .step tab: {imported}')
 
         # The narrowest phones still fit.
         tap.set_viewport_size({'width': 360, 'height': 740})

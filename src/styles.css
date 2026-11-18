@@ -389,7 +389,13 @@ h1, h2, p { margin: 0; }
   .stale-preview, .preview-stage.measuring .stale-preview { top: auto; bottom: 8px; left: auto; right: 8px; }
 
   .joints { left: 8px; bottom: 8px; width: auto; max-width: calc(100% - 16px); max-height: calc(100% - 76px); }
-  .joints.open { right: 8px; max-width: none; max-height: 58%; }
+  /* An open sheet is a strip along the bottom. The canvas gets the space above it, so the model stays on screen and centred. */
+  .preview-stage { --sheet: clamp(168px, 44%, 236px); }
+  .joints.open { left: 0; right: 0; bottom: 0; height: var(--sheet); max-width: none; max-height: none; border-width: 1px 0 0; border-radius: 10px 10px 0 0; }
+  .joints.open .joint-list { flex: 1; min-height: 0; overscroll-behavior: contain; }
+  .preview-stage:has(.joints.open) .canvas-host { height: calc(100% - var(--sheet)); }
+  .preview-stage:has(.joints.open) .stale-preview, .preview-stage.measuring:has(.joints.open) .stale-preview { bottom: calc(var(--sheet) + 8px); }
+  .preview-stage:has(.joints.open) .measure-card { max-height: calc(100% - var(--sheet) - 16px); }
   .joints-toggle, .joints-reset { min-height: 44px; padding: 0 12px; font-size: 13px; }
   .joints header { padding: 0 2px; }
   .joint-list { padding: 2px 12px 10px; }
