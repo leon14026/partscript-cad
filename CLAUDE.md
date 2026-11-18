@@ -2,7 +2,7 @@
 
 Browser CAD: OpenSCAD code in, STEP out, with jointed assemblies. Static site, no backend.
 
-- **The plan for upcoming work is `docs/PLAN.md`.** Read its status notes at the top, then section 0 (rules), section 2 (measured facts) and section 3 (kernel cookbook) before changing engine code. Phases 1 to 5 and the Parts menu are done and live. Phases 6 (import STEP and STL) and 7 (Measure) are done and not pushed yet: the owner tests them together.
+- **The plan for upcoming work is `docs/PLAN.md`.** Read its status notes at the top, then section 0 (rules), section 2 (measured facts) and section 3 (kernel cookbook) before changing engine code. Phases 1 to 5 and the Parts menu are done and live. Phases 6 (import STEP and STL) and 7 (Measure) are done and live (commit `df6cb0a`).
 - Check your work before every commit: `npm run check && npm test && npm run build`. Then, if Playwright and Chrome are available, `python3 scripts/smoke.py` and `python3 scripts/smoke.py --software` (they read `dist/`, so build first).
 - Pushing to `main` publishes the live site. Ask the owner first.
 - The owner's own design files (the label fan folder) are not in this repository. Do not commit them. Keep probe scripts, test designs and STEP exports outside the repository too.
