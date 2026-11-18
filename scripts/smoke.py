@@ -7,6 +7,7 @@ Needs Python Playwright (pip install playwright) and a Chrome or Chromium binary
 Writes screenshots to .test-output/ and exits 1 on a failed build or a console error.
 """
 import argparse
+import contextlib
 import functools
 import http.server
 import math
@@ -54,6 +55,22 @@ with sync_playwright() as p:
     page.on('pageerror', lambda e: problems.append(f'page error: {str(e)[:300]}'))
     page.goto(url)
     page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
+
+    @contextlib.contextmanager
+    def answering(text=None):
+        # Answer the dialogs the page opens while the block runs, then stop. (A once-handler stays registered when no dialog
+        # appears, and answers a later one for the wrong check.) Yields the messages seen.
+        seen = []
+
+        def handler(dialog):
+            seen.append(dialog.message)
+            dialog.accept(text) if text is not None else dialog.accept()
+
+        page.on('dialog', handler)
+        try:
+            yield seen
+        finally:
+            page.remove_listener('dialog', handler)
 
     def canvas_picture():
         page.wait_for_timeout(300)   # a frame is drawn on the next animation frame
@@ -190,8 +207,8 @@ with sync_playwright() as p:
         # reload the page, and save the project as a zip.
         name = 'import'
         page.click('summary[aria-label="Examples"]')
-        page.once('dialog', lambda dialog: dialog.accept())
-        page.locator('.examples-popover button').nth(example_index).click()
+        with answering():
+            page.locator('.examples-popover button').nth(example_index).click()
         wait_built()
         with page.expect_download() as download:
             page.click('.button-step')
@@ -267,13 +284,34 @@ with sync_playwright() as p:
         if 'partscript.json' not in inside or not same:
             problems.append(f'{name}: the project zip should hold the imported files unchanged: {inside}')
 
+    def check_new_project():
+        # New starts a blank one-file project, and the + beside the tabs adds to it.
+        name = 'new project'
+        page.click('.cm-content')
+        page.keyboard.type(' ', delay=3)   # an unsaved change, so New asks before it replaces the project
+        with answering() as asked:
+            page.click('button[aria-label="New project"]')
+        notice = wait_built()
+        if not asked:
+            problems.append(f'{name}: New should ask before replacing a project with unsaved changes')
+        tabs = page.locator('.file-tab-name').all_inner_texts()
+        if tabs != ['part.scad'] or page.locator('.output-message.error').count() or 'Built one solid' not in notice:
+            problems.append(f'{name}: expected one tab, part.scad, that builds: {tabs} {notice}')
+        with answering('arm.scad'):
+            page.click('button[aria-label="Add a file"]')
+        page.wait_for_timeout(300)
+        tabs = page.locator('.file-tab-name').all_inner_texts()
+        if tabs != ['part.scad', 'arm.scad']:
+            problems.append(f'{name}: the + should add a tab to the new project: {tabs}')
+        print(f'new project: {notice}')
+
     page.click('summary[aria-label="Examples"]')
     names = [item.inner_text() for item in page.locator('.examples-popover button strong').all()]
     page.keyboard.press('Escape')
     for index, name in enumerate(names):
         page.click('summary[aria-label="Examples"]')
-        page.once('dialog', lambda dialog: dialog.accept())
-        page.locator('.examples-popover button').nth(index).click()
+        with answering():
+            page.locator('.examples-popover button').nth(index).click()
         page.wait_for_timeout(200)   # the build starts at once; a small part can finish within this time
         page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
         notice = page.inner_text('.output-message').replace('\n', ' ')
@@ -355,6 +393,7 @@ with sync_playwright() as p:
     page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}bosl2.png"))
     print(f'BOSL2 gear: {notice} (fetches: {len(library_fetches)})')
     check_import(names.index('Swivel arm assembly'))
+    check_new_project()
     browser.close()
 
 server.shutdown()

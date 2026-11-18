@@ -1,4 +1,4 @@
-import { Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, FileBox, FileCode2, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
+import { Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, FileBox, FileCode2, FilePlus, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { CodeEditor, type EditorControl } from './components/CodeEditor.tsx';
 import { AssetPanel } from './components/AssetPanel.tsx';
@@ -86,6 +86,11 @@ function openLoopText(assembly: AssemblySpec, pose: Pose) {
   if (!open.length) return undefined;
   const [first] = open;
   return `The loop at joint "${first.joint}" cannot close: its two halves stay ${(Math.round(first.gap * 100) / 100)} mm apart. Check the link lengths and the at and child_at positions${open.length > 1 ? `, here and at ${count(open.length - 1, 'more joint')}` : ''}.`;
+}
+
+/** What a new .scad file holds: a small solid, so Run has something to build. */
+function blankSource(name: string) {
+  return `// ${name.replace(/\.scad$/i, '')} · dimensions in mm\ncube([20, 20, 10]);\n`;
 }
 
 function sameFiles(a: ProjectFile[], b: ProjectFile[]) {
@@ -232,6 +237,11 @@ export function App() {
     }
   }
 
+  /** Start again with one blank file. Add files with the + beside the tabs. */
+  function newProject() {
+    replaceDocument({ files: [{ name: 'part.scad', source: blankSource('part.scad') }], active: 'part.scad', entry: null });
+  }
+
   function unsaved() {
     return !sameFiles(savedFiles.current, latest.current.files);
   }
@@ -296,8 +306,7 @@ export function App() {
     }
     const name = askName('Name the new file', uniqueName('part.scad', before.files.map((file) => file.name)));
     if (!name) return;
-    const source = `// ${name.replace(/\.scad$/i, '')} · dimensions in mm\ncube([20, 20, 10]);\n`;
-    editProject({ files: [...before.files, { name, source }], active: name }, `Added ${name}.`);
+    editProject({ files: [...before.files, { name, source: blankSource(name) }], active: name }, `Added ${name}.`);
   }
 
   function renameFile(old: string) {
@@ -493,6 +502,9 @@ export function App() {
           <div><h1>Partscript<span> CAD</span></h1><span className="brand-subtitle">Parametric workbench</span></div>
         </div>
         <div className="app-actions">
+          <button className="button button-quiet file-action" type="button" title="Start a new project with one blank file. Add more files with the + beside the tabs." aria-label="New project" disabled={!!stage} onClick={newProject}>
+            <FilePlus size={17}/><span>New</span>
+          </button>
           <button className="button button-quiet file-action" type="button" title="Open SCAD files, STEP or STL files to import, or a saved project (.zip)" aria-label="Open" disabled={!!stage} onClick={() => fileInput.current?.click()}>
             <FolderOpen size={17}/><span>Open</span>
           </button>
@@ -641,7 +653,7 @@ export function App() {
             <dt>Imported STEP and STL files</dt>
             <dd>Choose <strong>Open</strong> and pick a <code>.step</code>, <code>.stp</code> or <code>.stl</code> file, such as a motor or a bearing from GrabCAD or a supplier. It becomes a tab you can look at with <strong>Show on its own</strong> and measure. Use it as a part with <code>part("motor", "motor.step");</code> and connect it with joints like any other part. A STEP keeps its true curves and exports as it came. An STL is a mesh with no units, read as millimetres, so it exports with flat faces. Inside a <code>.scad</code> file, <code>import("bracket.stl");</code> reads an STL of the project too. Files from a CAD program's own format (<code>.sldprt</code>, <code>.ipt</code>, <code>.f3d</code>, <code>.x_t</code>) and IGES files cannot be read, so download or export the STEP version. One file can be up to 40 MB and a project up to 120 MB of them.</dd>
             <dt>Sharing values</dt>
-            <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>Save project</strong> downloads every file, imported ones included, as one zip a teammate can open.</dd>
+            <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>New</strong> starts a blank project with one file, and the <strong>+</strong> beside the tabs adds more. <strong>Save project</strong> downloads every file, imported ones included, as one zip a teammate can open.</dd>
             <dt>Model limits</dt>
             <dd>In millimetres. A part must have volume, and a file that draws only flat 2D shapes needs <code>linear_extrude()</code>. Collision checks are unavailable. Libraries other than BOSL2 are unavailable in this version, and <code>text()</code> fails because no fonts are bundled. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
           </dl>
