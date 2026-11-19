@@ -92,3 +92,12 @@ export function flatRoundNotes(model: ModelPreview, files: Record<string, string
   });
   return { errors, logs };
 }
+
+/** The note for a drawing that reads a hole as a polygon: which file and line made it, and what to change. */
+export function polygonHoleNote(model: ModelPreview, files: Record<string, string>, entry: string, partName: string | undefined, diameter: number, sides: number) {
+  const part = model.assembly.parts.find((item) => item.name === partName);
+  const file = part?.file ?? entry;
+  const where = part?.inline ? `${file}, part("${part.name}")` : file;
+  const size = Number(diameter.toFixed(2));
+  return `${where}: a hole of Ø${size} is a ${sides}-sided polygon (${setOnText(fnLines(files[file] ?? ''), [sides])}), so its diameter is read over the corners. Delete $fn for a round hole.`;
+}

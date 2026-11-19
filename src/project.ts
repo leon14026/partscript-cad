@@ -1,4 +1,6 @@
 import { strFromU8, strToU8, unzip, unzipSync, zip, zipSync, type UnzipFileFilter, type Zippable } from 'fflate';
+import { readDrawingOptions } from './drawing/options.ts';
+import type { DrawingOptions } from './drawing/types.ts';
 import { fileNamePattern } from './engine/assembly.ts';
 import { assetNamePattern, formatBytes, unreadableFormat } from './engine/assets.ts';
 import { CadError, MAX_ASSET_BYTES, MAX_ASSETS_BYTES, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type ProjectAssets, type ProjectFiles } from './engine/protocol.ts';
@@ -22,6 +24,8 @@ export interface Project {
   active: string;
   /** The file Run builds. Null builds the file shown in the editor. */
   entry: string | null;
+  /** The sheet size, projection and title block fields of the Drawing dialog. Absent until they are changed. */
+  drawing?: DrawingOptions;
 }
 
 export function isAsset(file: ProjectFile): file is AssetFile {
@@ -115,12 +119,12 @@ const manifestName = 'partscript.json';
 
 /** The project as a version 1 file: text only. Kept for tests and for anything that still reads it. */
 export function serializeProject(project: Project) {
-  return JSON.stringify({ format: projectFormat, version: 1, entry: project.entry, active: project.active, files: toFiles(project) }, null, 2);
+  return JSON.stringify({ format: projectFormat, version: 1, entry: project.entry, active: project.active, drawing: project.drawing, files: toFiles(project) }, null, 2);
 }
 
 function zipEntries(project: Project): Zippable {
   const entries: Zippable = {
-    [manifestName]: [strToU8(JSON.stringify({ format: projectFormat, version: 2, entry: project.entry, active: project.active }, null, 2)), { level: 6 }],
+    [manifestName]: [strToU8(JSON.stringify({ format: projectFormat, version: 2, entry: project.entry, active: project.active, drawing: project.drawing }, null, 2)), { level: 6 }],
   };
   for (const file of project.files) {
     // A STEP is text and shrinks a lot. An STL is mostly numbers, so spend less time on it.
@@ -227,7 +231,13 @@ function projectFromEntries(unpacked: Record<string, Uint8Array>): Project {
   if (problem) throw new CadError(problem);
   const has = (name: unknown): name is string => typeof name === 'string' && files.some((file) => file.name === name);
   const entry = has(manifest.entry) ? manifest.entry : null;
-  return { files, active: has(manifest.active) ? manifest.active : entry ?? files[0].name, entry };
+  return withDrawing({ files, active: has(manifest.active) ? manifest.active : entry ?? files[0].name, entry }, manifest.drawing);
+}
+
+/** The project with its drawing settings, when it has any. A project without them has no such key at all. */
+function withDrawing(project: Project, saved: unknown): Project {
+  const drawing = readDrawingOptions(saved);
+  return drawing ? { ...project, drawing } : project;
 }
 
 /** Read a saved project (version 1 JSON) or a stored draft. Returns undefined for anything else. */
@@ -260,5 +270,5 @@ export function readProject(value: unknown): Project | undefined {
   if (!files.length || projectProblem(files)) return undefined;
   const has = (name: unknown): name is string => typeof name === 'string' && files.some((file) => file.name === name);
   const entry = has(data.entry) ? data.entry : null;
-  return { files, active: has(data.active) ? data.active : entry ?? files[0].name, entry };
+  return withDrawing({ files, active: has(data.active) ? data.active : entry ?? files[0].name, entry }, data.drawing);
 }

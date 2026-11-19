@@ -1,11 +1,12 @@
 import { CadError, JOB_TIMEOUT_MS, type BuildStage, type CollisionTest, type GeometryCommand, type GeometryReply, type MeasurePick, type Pose, type ProjectAssets, type ProjectFiles } from './protocol.ts';
 
-type JobResult = Extract<GeometryReply, { kind: 'preview' | 'step' | 'measure' | 'collide' }>;
+type JobResult = Extract<GeometryReply, { kind: 'preview' | 'step' | 'measure' | 'collide' | 'draw' }>;
 type JobCommand =
   | { kind: 'build'; revision: number; files: ProjectFiles; entry: string; assetNames: string[]; newAssets: ProjectAssets }
   | { kind: 'export'; revision: number; pose: Pose }
   | { kind: 'measure'; revision: number; pose: Pose; picks: MeasurePick[] }
-  | { kind: 'collide'; revision: number; tests: CollisionTest[] };
+  | { kind: 'collide'; revision: number; tests: CollisionTest[] }
+  | { kind: 'draw'; revision: number; pose: Pose };
 
 interface PendingJob {
   id: number;
@@ -48,6 +49,13 @@ export class BrowserGeometryEngine {
     const reply = await this.#send({ kind: 'collide', revision, tests }, () => {});
     if (reply.kind !== 'collide') throw new CadError('The geometry engine returned an unexpected result.');
     return reply.answer;
+  }
+
+  /** The views, holes and sections of every distinct part of the model on screen, for the drawing sheets. */
+  async draw(revision: number, pose: Pose, progress: PendingJob['progress'] = () => {}) {
+    const reply = await this.#send({ kind: 'draw', revision, pose }, progress);
+    if (reply.kind !== 'draw') throw new CadError('The geometry engine returned an unexpected result.');
+    return reply.result;
   }
 
   cancel(reason = 'Cancelled. Run the current code to build the model again.') {

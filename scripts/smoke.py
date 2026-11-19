@@ -343,8 +343,117 @@ with sync_playwright() as p:
             problems.append(f'{name}: a true cylinder should say nothing about $fn: {notice!r}')
         print(f'{name}: ok')
 
+    def check_drawing():
+        # The Drawing dialog: a part with a counterbored hole gets a sheet with its callouts and a section, the three downloads are what
+        # they should be, an assembly gets its own sheet and a zip, and the title block fields come back after a reload.
+        name = 'drawing'
+        suffix = 'software-' if args.software else ''
+
+        def build(source):
+            page.click('.cm-content')
+            page.keyboard.press('Control+A')
+            page.keyboard.type(source, delay=3)
+            page.keyboard.press('Control+Enter')
+            return wait_built()
+
+        def sheet_text():
+            page.wait_for_selector('dialog.drawing-dialog[open] img.sheet-image', timeout=60000)
+            page.wait_for_timeout(300)
+            return page.evaluate("() => fetch(document.querySelector('img.sheet-image').src).then((r) => r.text())")
+
+        def download(label, file):
+            with page.expect_download() as taken:
+                page.click(f'dialog.drawing-dialog button:has-text("{label}")')
+            path = shots / file
+            taken.value.save_as(str(path))
+            return taken.value.suggested_filename, path.read_bytes()
+
+        notice = build('part("stepped") { difference() { cube([40, 30, 20]); translate([20, 15, -1]) cylinder(d = 6, h = 22); translate([20, 15, 12]) cylinder(d = 11, h = 9); } }')
+        if 'Built' not in notice or page.locator('.output-message.error').count():
+            problems.append(f'{name}: the part should build: {notice!r}')
+            return
+        page.click('.app-actions > button.button-drawing')
+        svg = sheet_text()
+        for wanted in ['Ø6 THRU', 'CBORE Ø11 DEEP 8', 'SECTION A-A', 'stepped', 'THIRD ANGLE', 'TOLERANCES NOT SPECIFIED']:
+            if wanted not in svg:
+                problems.append(f'{name}: the sheet should say {wanted!r}')
+        page.screenshot(path=str(shots / f'smoke-{suffix}drawing.png'))
+        file_name, pdf = download('PDF', 'drawing.pdf')
+        if file_name != 'stepped.pdf' or not pdf.startswith(b'%PDF-1.4') or b'%%EOF' not in pdf[-16:]:
+            problems.append(f'{name}: the PDF should be stepped.pdf and a PDF 1.4 file: {file_name} {pdf[:12]!r}')
+        file_name, dxf = download('DXF', 'drawing.dxf')
+        text = dxf.decode('latin-1')
+        if file_name != 'stepped.dxf' or 'CIRCLE' not in text or '%%c6 THRU' not in text or 'HIDDEN' not in text:
+            problems.append(f'{name}: the DXF should have the hole as a CIRCLE and %%c6 THRU: {file_name}')
+        file_name, shown = download('SVG', 'drawing.svg')
+        if file_name != 'stepped.svg' or shown.decode('utf-8') != svg:
+            problems.append(f'{name}: the SVG downloaded should be the sheet shown: {file_name}')
+        # A4 is a different sheet: 297 by 210.
+        page.select_option('dialog.drawing-dialog .drawing-form select >> nth=0', 'a4')
+        page.wait_for_timeout(400)
+        if 'viewBox="0 0 297 210"' not in sheet_text():
+            problems.append(f'{name}: choosing A4 should give a sheet 297 by 210 mm')
+        page.fill('dialog.drawing-dialog .drawing-form label:has-text("Drawn by") input', 'L. SMOKE')
+        page.wait_for_selector('.autosave-status:has-text("Draft saved")', timeout=10000)
+        page.keyboard.press('Escape')
+
+        # Two parts: an assembly sheet first, then each part, and a zip with a file for each sheet.
+        notice = build('part("a") cube([20, 10, 10]); part("b") translate([30, 0, 0]) cube([20, 10, 10]); part("c") translate([60, 0, 0]) cube([10, 10, 10]);')
+        page.click('.app-actions > button.button-drawing')
+        sheet_text()
+        options = page.locator('dialog.drawing-dialog .drawing-part select option').all_inner_texts()
+        if len(options) != 4 or not options[0].startswith('Assembly') or options[1:] != ['a', 'b', 'c']:
+            problems.append(f'{name}: three parts should give an assembly sheet and three part sheets: {options}')
+        file_name, zipped = download('SVG', 'drawings.zip')
+        with zipfile.ZipFile(shots / 'drawings.zip') as archive:
+            inside = sorted(archive.namelist())
+        if not file_name.endswith('-drawings.zip') or len(inside) != 4 or not all(item.endswith('.svg') for item in inside):
+            problems.append(f'{name}: SVG of four sheets should be a zip of four .svg files: {file_name} {inside}')
+        page.keyboard.press('Escape')
+
+        # The settings are part of the draft, so a reload keeps them.
+        page.wait_for_selector('.autosave-status:has-text("Draft saved")', timeout=10000)
+        page.reload()
+        wait_built()
+        page.click('.app-actions > button.button-drawing')
+        sheet_text()
+        kept = page.input_value('dialog.drawing-dialog .drawing-form label:has-text("Drawn by") input')
+        size = page.input_value('dialog.drawing-dialog .drawing-form select >> nth=0')
+        if kept != 'L. SMOKE' or size != 'a4':
+            problems.append(f'{name}: after a reload the sheet and Drawn by should be kept: {size!r} {kept!r}')
+        page.keyboard.press('Escape')
+        print(f'{name}: ok')
+
+    def check_drawing_phone():
+        # On a phone the dialog is one column that fits the screen, with the sheet first and targets a thumb can hit.
+        name = 'drawing (phone)'
+        phone = browser.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=2, has_touch=True, is_mobile=True)
+        if args.software:
+            phone.add_init_script("const g = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (t, ...a) { return /webgl/.test(t) ? null : g.call(this, t, ...a); };")
+        tap = phone.new_page()
+        tap.on('console', lambda m: problems.append(f'console ({name}): {m.text[:300]}') if m.type == 'error' else None)
+        tap.on('pageerror', lambda e: problems.append(f'page error ({name}): {str(e)[:300]}'))
+        tap.goto(url)
+        tap.wait_for_selector('.output-message.success, .output-message.error', state='attached', timeout=120000)
+        tap.wait_for_timeout(500)
+        tap.locator('button[aria-label="Files and manual"]').tap()
+        tap.locator('.file-actions button[aria-label="Drawing"]').tap()
+        tap.wait_for_selector('dialog.drawing-dialog[open] img.sheet-image', timeout=60000)
+        tap.wait_for_timeout(400)
+        found = tap.evaluate("""() => {
+          const dialog = document.querySelector('dialog.drawing-dialog'), box = dialog.getBoundingClientRect();
+          const sheet = document.querySelector('.drawing-sheet').getBoundingClientRect(), form = document.querySelector('.drawing-form').getBoundingClientRect();
+          const small = [...dialog.querySelectorAll('button, select, input')].filter((el) => { const r = el.getBoundingClientRect(); return r.width && (r.height < 43.5 || r.width < 43.5) && el.type !== 'checkbox'; }).map((el) => el.outerHTML.slice(0, 80));
+          return { wide: dialog.scrollWidth > dialog.clientWidth + 1, inside: box.left >= 0 && box.right <= window.innerWidth + 1, sheetFirst: sheet.top < form.top, small };
+        }""")
+        if found['wide'] or not found['inside'] or not found['sheetFirst'] or found['small']:
+            problems.append(f'{name}: the dialog should fit a phone, show the sheet first and have 44 px targets: {found}')
+        tap.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}drawing-phone.png"))
+        phone.close()
+        print(f'{name}: ok')
+
     def check_manual():
-        # The header and the Help dialog both link to the manual page, which has its thirteen sections and a way back.
+        # The header and the Help dialog both link to the manual page, which has its fourteen sections and a way back.
         name = 'manual'
         link = page.locator('a[aria-label="Manual"]')
         if link.count() != 1 or link.get_attribute('href') != 'manual.html' or link.get_attribute('target') != '_blank':
@@ -360,10 +469,10 @@ with sync_playwright() as p:
         manual.on('pageerror', lambda e: problems.append(f'page error (manual): {str(e)[:300]}'))
         manual.goto(url.replace('index.html', 'manual.html'))
         headings = manual.locator('main h2').all_inner_texts()
-        if len(headings) != 13 or not headings[0].startswith('1. Getting started') or not headings[-1].startswith('13. Cheat sheet'):
-            problems.append(f'{name}: the manual page should have thirteen numbered sections: {headings}')
-        if manual.locator('nav.toc a').count() != 13 or manual.locator('a[href="./"]').count() != 1:
-            problems.append(f'{name}: the manual page should have a contents list of twelve links and a link back to the editor')
+        if len(headings) != 14 or not headings[0].startswith('1. Getting started') or not headings[-1].startswith('14. Cheat sheet'):
+            problems.append(f'{name}: the manual page should have fourteen numbered sections: {headings}')
+        if manual.locator('nav.toc a').count() != 14 or manual.locator('a[href="./"]').count() != 1:
+            problems.append(f'{name}: the manual page should have a contents list of fourteen links and a link back to the editor')
         if manual.locator('pre').count() < 40:
             problems.append(f'{name}: the manual page should show its code examples, found {manual.locator("pre").count()}')
         manual.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}manual.png"))
@@ -842,6 +951,8 @@ with sync_playwright() as p:
     check_import(names.index('Swivel arm assembly'))
     check_new_project()
     check_round_notes()
+    check_drawing()
+    check_drawing_phone()
     check_manual()
     check_bad_files()
     check_phone()

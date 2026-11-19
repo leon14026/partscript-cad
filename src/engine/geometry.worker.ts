@@ -95,6 +95,14 @@ scope.onmessage = async ({ data }: MessageEvent<GeometryCommand>) => {
       return;
     }
 
+    if (data.kind === 'draw') {
+      if (!model || model.revision !== revision || !builderPromise) {
+        throw new CadError('Run the current code before drawing it.');
+      }
+      post({ kind: 'draw', id, result: (await builderPromise).draw(model.built, data.pose) });
+      return;
+    }
+
     if (data.kind === 'collide') {
       if (!model || model.revision !== revision || !builderPromise) {
         throw new CadError('Run the current code before checking for collisions.');

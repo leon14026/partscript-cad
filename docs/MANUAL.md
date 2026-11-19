@@ -8,7 +8,7 @@ This manual is for a mechanical engineer who knows CAD and does not write code. 
 
 **The page.** The code is on the left and the model on the right. Under the code is the **Build output**, which says what was built, how long it took, and what went wrong if something did.
 
-**On a phone.** On a screen narrower than 711 pixels the page shows one pane at a time. It opens on the **Preview**, and the **Preview** and **Code** buttons under the header switch between the two. The file tabs are one row that you swipe sideways, and the two buttons that add a file (**+** and the file button) stay at its right edge. Choosing an example shows its preview, and a red mark on **Code** means the last build failed, so open it to read the message. The file buttons below (New, Open, Save file, Save project and the Manual) are behind the **⋯** button in the header. The joint sliders start folded into a **Joints** button at the bottom left of the preview. A tap opens them as a strip along the bottom, and the model shrinks to fit above it. Scroll the strip when there are more joints than fit. The file picker behind **Open** shows every file on a phone, because an iPhone greys out a `.STEP` it does not recognise; it still refuses a file that is not CAD. Drag one finger to turn the model, pinch to zoom, and drag two fingers to move it. Every button is at least 44 pixels square.
+**On a phone.** On a screen narrower than 711 pixels the page shows one pane at a time. It opens on the **Preview**, and the **Preview** and **Code** buttons under the header switch between the two. The file tabs are one row that you swipe sideways, and the two buttons that add a file (**+** and the file button) stay at its right edge. Choosing an example shows its preview, and a red mark on **Code** means the last build failed, so open it to read the message. The buttons below (New, Open, Save file, Save project and the Manual) and **Drawing** are behind the **⋯** button in the header. The joint sliders start folded into a **Joints** button at the bottom left of the preview. A tap opens them as a strip along the bottom, and the model shrinks to fit above it. Scroll the strip when there are more joints than fit. The file picker behind **Open** shows every file on a phone, because an iPhone greys out a `.STEP` it does not recognise; it still refuses a file that is not CAD. Drag one finger to turn the model, pinch to zoom, and drag two fingers to move it. Every button is at least 44 pixels square.
 
 **Buttons in the header.**
 
@@ -17,6 +17,7 @@ This manual is for a mechanical engineer who knows CAD and does not write code. 
 - **Save file** downloads the file that is open, as it is.
 - **Save project** (Ctrl or Cmd + S) downloads every file, imported ones included, as one `.partscript.zip`. The zip is named after the file Run builds, so pin your assembly file (below) before you save.
 - **Run** (Ctrl or Cmd + Enter) builds the model. **Cancel** takes its place while a build runs.
+- **Drawing** opens dimensioned sheets of the parts, to download as PDF, DXF or SVG (section 9).
 - **Export STEP** downloads the model you see. For an assembly it writes one named, coloured component per part, in the pose shown.
 - **Examples** opens a menu of ready projects: a swivel arm, a crank-rocker linkage, a gear and cam, and four single parts. They are a good way to see how a finished file looks.
 
@@ -83,7 +84,7 @@ linear_extrude(height = 5)
   }
 ```
 
-**`$fn`.** OpenSCAD lets you set `$fn` to say how many flat sides a round shape has. Do not set it for parts that should be round. A `cylinder` with `$fn` is a many-sided prism, and its holes are polygons in the STEP file. Section 9 explains this, and the build output warns you when it happens.
+**`$fn`.** OpenSCAD lets you set `$fn` to say how many flat sides a round shape has. Do not set it for parts that should be round. A `cylinder` with `$fn` is a many-sided prism, and its holes are polygons in the STEP file. Section 11 explains this, and the build output warns you when it happens.
 
 ## 3. Parts
 
@@ -399,7 +400,7 @@ difference() {
 }
 ```
 
-The library is about 1.2 MB and downloads the first time a project includes it during a visit. Each run that includes it takes about a quarter of a second longer. Other libraries are not available, and a build that includes one says so. The gear is exact. A thread is faceted (section 9). For a round bore, cut your own cylinder as above, because the library's own shaft hole is a coarse polygon.
+The library is about 1.2 MB and downloads the first time a project includes it during a visit. Each run that includes it takes about a quarter of a second longer. Other libraries are not available, and a build that includes one says so. The gear is exact. A thread is faceted (section 11). For a round bore, cut your own cylinder as above, because the library's own shaft hole is a coarse polygon.
 
 ## 7. Importing STEP and STL files
 
@@ -491,13 +492,76 @@ Click a second thing and the card also gives the distance and the angle between 
 - **Esc** clears the picks, and a second **Esc** leaves the tool. On a phone, tap empty space or **Clear** to clear the picks, and tap **Measure** again to leave the tool. Tap where the manual says click.
 - A faceted part offers areas and corners only. Its edges and curves are made of triangles, so they are not measured.
 
-## 9. Collisions
+## 9. Drawings
+
+Press **Drawing**, beside **Export STEP**, to turn the parts of the model into dimensioned sheets, one for each part. The dialog shows the sheet as it will print, and downloads it as a PDF, a DXF or an SVG. Run the code first. A drawing is read from the solids of the last build, in the pose shown, so it cannot disagree with the model or the STEP file.
+
+```scad
+// One part with a counterbored hole. Run it, press Drawing, and the sheet has a section A-A through the hole.
+part("stepped") {
+  difference() {
+    cube([40, 30, 20]);
+    translate([20, 15, -1]) cylinder(d = 6, h = 22);
+    translate([20, 15, 12]) cylinder(d = 11, h = 9);
+  }
+}
+```
+
+**What a sheet holds.**
+
+- **Views.** A plate, which has one side under 15 % of its longest, gets two views: the face and one edge. Any other part gets the front, top and right views and an isometric. The default is third angle projection, and first angle is a choice. The views use the model's axes: the front view looks along +Y and shows x across and z up, the top view shows x and y, and the right view shows y and z. A part is drawn in its own coordinates, before `at`, `rot` or a joint place it.
+- **Overall sizes** on the views that show them.
+- **Holes.** Each kind of round hole is one callout, with a count when there are several: `Ø8 THRU`, `4X Ø3.4 THRU`, `Ø6 DEEP 12`, and `CBORE Ø11 DEEP 8` under the diameter of a counterbored hole. The sizes are read from the cylinders of the solid, not measured off the picture. The places of the holes are given from the lower left corner of the view, as figures along the bottom and the left.
+- **A section A-A** when a hole is blind or counterbored, cut through the axis of the first such hole and hatched at 45 degrees. A cutting line with the letters A at its ends is drawn on the view it is cut from.
+- **Turned parts.** A shaft, a pulley or a boss turned about one axis gets the diameter of each step and its length.
+- **A title block** in the lower right corner: the part, the scale, the sheet, the projection, the units, drawn by, date, revision and material, and the note `DIMENSIONS IN MM. TOLERANCES NOT SPECIFIED.` OpenSCAD has no tolerances, so none are written.
+
+**Sheet and scale.** Choose the sheet, the projection and whether hidden lines are drawn at the top of the dialog.
+
+| Sheet | Size in mm |
+| --- | --- |
+| ANSI A (the default) | 279.4 x 215.9 |
+| A4 | 297 x 210 |
+| A3 | 420 x 297 |
+| ANSI B | 431.8 x 279.4 |
+
+The scale is the first of 1:1, 1:2, 1:5, 1:10, 1:20 and 1:50 at which the views and their dimensions fit above the title block. A part under 20 mm long on its longest side starts from 10:1 and goes down through 5:1, 2:1 and 1:1. The isometric view has a scale of its own, which is not the one in the title block. If a large part comes out smaller than the paper seems to need, choose the next larger sheet: the room for the views is the sheet above the title block, whose whole height is kept clear. **Hidden lines** is dashed lines for what is behind a surface. With **When there are few**, which is the default, they are drawn for exact parts that have not more than 150 hidden curves in a view. They are never drawn on an isometric view in that setting, and **Always** and **Never** override it.
+
+**The title block** has four fields you fill in: **Drawn by**, **Date**, **Revision** and **Material**, up to 40 characters each. Revision starts as `A`. The date is empty until you type one, because nothing is filled in for you. The fields, the sheet, the projection and the hidden-lines choice are saved with the project: **Save project** and the draft in the browser both keep them, and **Open** brings them back.
+
+**An assembly.** A model with two or more parts gets an assembly sheet first, followed by the sheets of the parts. The assembly sheet is an isometric view of the model in the pose shown, so move a joint and press **Drawing** again to draw another pose. It has a parts list (item, quantity, part and size) and a numbered balloon on each part, joined to a point of the part that can be seen. A part that is hidden behind others gets a dashed leader. Two parts with the same geometry share one sheet and one row of the list, with a quantity, and the dialog marks the sheet `(×2)`.
+
+**What is not on the sheet.** A drawing that looks complete and leaves out a feature is worse than none, so the dialog lists what a sheet leaves out under **Not on this sheet**, and says what to change when there is something to change. The list can say:
+
+- Rounded faces that are not a plain hole, such as fillets, slot ends and part-round holes, are drawn but not dimensioned. So are conical faces (countersinks and chamfers), cylinders on a skewed axis, and any other curved face.
+- A hole that cannot be seen square-on in the views drawn is not dimensioned.
+- A hole made with `$fn` is a many-sided polygon. Its diameter is read over the corners, and the note names the file and line to change.
+- A section through a blind hole is not drawn when the view that would carry its cutting line is not on the sheet.
+- Hole callouts are stacked in up to six rows above a view. A callout that does not fit in six is listed and left off.
+- A place along a view that would crowd another is left off.
+- The part or the assembly is too large for the sheet at 1:50, or the parts list or the balloons do not fit. Choose a larger sheet.
+
+**Exact, faceted and imported parts.** An exact part (section 11) is drawn from its solid, with the hole sizes read as above. A faceted part has only flat faces to read, so it is drawn with its outline and the edges where the surface turns by more than 28 degrees, which is the rule the preview uses. It gets overall dimensions and no hole callouts, and its sheet says it is faceted. An imported STEP is drawn like an exact part, with its hidden lines off unless you choose **Always**, and a hole is dimensioned only when it is wider than Ø4. An imported STL is faceted.
+
+**Files.** The three buttons download what the dialog shows.
+
+| Button | File |
+| --- | --- |
+| **PDF** | One file with a page for each sheet. The lines are vector lines and the text is Helvetica, so no font file is embedded. |
+| **DXF** | ASCII, version R12, in millimetres, which every CAD program reads. The layers are `OUTLINE`, `HIDDEN`, `DIM`, `HATCH`, `TEXT` and `BORDER`, and Ø is written as `%%c`. |
+| **SVG** | A picture that opens in a browser or a drawing program. |
+
+With the **All … sheets** box ticked, which is the default when there is more than one sheet, a PDF is one file and an SVG or a DXF is a zip with one file for each sheet. Untick it to download the sheet shown. The same drawing always gives the same file, byte for byte. A file is named after its part, or after the project for a zip or a PDF of several sheets.
+
+On a phone, **Drawing** is behind the **⋯** button, and the dialog is one column, with the sheet at the top and the settings below it.
+
+## 10. Collisions
 
 The preview checks whether parts overlap, in every pose you set. Two parts collide when they share volume. Parts that only touch, on a face, along an edge or at a corner, do not collide.
 
 - **In a pose.** A part that overlaps another turns red, yellow lines show where their surfaces cross, and a card in the preview names the pair. A moment after a joint stops, the card gives the overlap in cubic millimetres, worked out on the exact solids. If the exact solids say the parts only touch, the red goes away. Parts you have hidden with **Parts** are still checked.
 - **A part inside another.** A part that sits wholly inside a solid part is a collision too, even though no surface crosses. A part that sits in a hollow of another is not.
-- **Faceted parts.** A faceted part has no exact solid to measure (section 10), so a pair that includes one is found from the preview mesh alone, and the card says so. It shows no volume.
+- **Faceted parts.** A faceted part has no exact solid to measure (section 11), so a pair that includes one is found from the preview mesh alone, and the card says so. It shows no volume.
 
 **Switching it off.** The **Collisions** button in the preview toolbar turns collision detection off and on. It appears when the model has two or more parts, and it starts on. When it is off the page does no collision work: nothing turns red, and the card, **Check motion** and **Stop at collision** are hidden. The setting belongs to the page and is kept in this browser between visits. The code does not hold it, and `allow_overlap` does not change it.
 
@@ -558,7 +622,7 @@ allow_overlap(): give two part names in quotes, for example allow_overlap("shaft
 - It checks parts against each other, and not a part against itself.
 - The preview of a round surface lies up to a thousandth of its radius inside the true surface, so a very tight fit is judged on the exact solids and not on the preview.
 
-## 10. Exact and faceted
+## 11. Exact and faceted
 
 The build output says whether each part is **exact** or **faceted**. It matters for the STEP file you export.
 
@@ -620,7 +684,7 @@ design.scad: 1 cylinder or circle is a 6-sided polygon in STEP, not true round (
 
 A circle with `$fn` inside a `linear_extrude` counts the same way. Set `$fn` only where you want flat sides.
 
-## 11. When something goes wrong
+## 12. When something goes wrong
 
 A build that fails shows a red message in the Build output, with the file and line beside it when they are known. Click the file and line to jump there. Here are the common ones.
 
@@ -779,7 +843,7 @@ This model has no solid volume. Check the dimensions and Boolean operations.
 
 **A file that Open refuses.** Open takes only `.scad`, `.step`, `.stp`, `.stl` and project zips. OpenSCAD code in a `.txt` file has to be renamed to end in `.scad`.
 
-## 12. Limits
+## 13. Limits
 
 | What | Limit |
 | --- | --- |
@@ -803,7 +867,7 @@ This model has no solid volume. Check the dimensions and Boolean operations.
 - Mates solved from faces, and a warning for parts that come close without touching.
 - The joints themselves in the STEP file. STEP carries the parts in the pose shown, and not the joints.
 
-## 13. Cheat sheet
+## 14. Cheat sheet
 
 **Shapes.**
 
@@ -861,6 +925,8 @@ allow_overlap("a", "b");     // these two parts may overlap, by design
 ```
 
 Parts that overlap turn red. **Check motion** (the magnifier on a joint) lists where in its travel they overlap, and **Stop at collision** holds a joint at the last clear pose.
+
+**Drawings.** **Drawing** (beside Export STEP) makes one dimensioned sheet for each part, and an assembly sheet with a parts list and balloons. PDF, DXF and SVG downloads. The sheet, the projection and the title block fields are saved with the project. What a sheet leaves out is listed under **Not on this sheet**.
 
 **Working order.** Write joints from the base outwards. A joint between parts that are already connected closes a loop. In a loop, the first joint with a `value` is held, and the others' values are starting guesses.
 

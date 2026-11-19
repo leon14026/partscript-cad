@@ -10,6 +10,10 @@ import { maxLeaves } from '../src/engine/flat.ts';
 import { JOB_TIMEOUT_MS, MAX_ASSET_BYTES, MAX_ASSETS_BYTES, MAX_PROJECT_BYTES, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type ProjectAssets, type ProjectFiles } from '../src/engine/protocol.ts';
 import { evaluateScad, renderMesh, type OpenScadFactory } from '../src/engine/scad.ts';
 import { facetedText, flatRoundNotes } from '../src/engine/summary.ts';
+import { layerOrder } from '../src/drawing/layers.ts';
+import { sheetSizes } from '../src/drawing/layout.ts';
+import { titleFieldLimit } from '../src/drawing/options.ts';
+import { buildSheet, defaultOptions, hiddenLineLimit } from '../src/drawing/sheet.ts';
 import { gearedMechanism } from '../src/gearedExample.ts';
 import { loadLibrary } from './libraries.ts';
 
@@ -25,7 +29,7 @@ after(() => kernel.releaseAll());
 const markdown = await readFile(new URL('../docs/MANUAL.md', import.meta.url), 'utf8');
 const blocks = codeBlocks(markdown);
 
-test('the manual has its thirteen sections, in order', () => {
+test('the manual has its fourteen sections, in order', () => {
   const titles = [...markdown.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
   assert.deepEqual(titles, [
     '1. Getting started',
@@ -36,21 +40,22 @@ test('the manual has its thirteen sections, in order', () => {
     '6. Several files',
     '7. Importing STEP and STL files',
     '8. Measure',
-    '9. Collisions',
-    '10. Exact and faceted',
-    '11. When something goes wrong',
-    '12. Limits',
-    '13. Cheat sheet',
+    '9. Drawings',
+    '10. Collisions',
+    '11. Exact and faceted',
+    '12. When something goes wrong',
+    '13. Limits',
+    '14. Cheat sheet',
   ]);
 });
 
-test('the manual renders to a page: thirteen sections, a contents list that links to them, and no Markdown left over', () => {
+test('the manual renders to a page: fourteen sections, a contents list that links to them, and no Markdown left over', () => {
   const page = renderManual(markdown);
-  assert.equal((page.match(/<h2 /g) ?? []).length, 13);
+  assert.equal((page.match(/<h2 /g) ?? []).length, 14);
   const { html, headings } = renderBody(markdown);
   const ids = new Set(headings.map((heading) => heading.id));
   const links = [...page.matchAll(/href="#([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(links.length, 13);
+  assert.equal(links.length, 14);
   for (const id of links) assert.ok(ids.has(id), `The contents list links to #${id}, which is not a heading.`);
   assert.equal(ids.size, headings.length, 'Two headings have the same id.');
   // Outside the code blocks nothing of the Markdown should show through.
@@ -117,7 +122,7 @@ test('the allow_overlap() signature, and the numbers the collision section gives
   const signature = markdown.match(/^allow_overlap\(([^)]*)\)$/m)?.[1];
   assert.ok(signature, 'The manual has no allow_overlap(...) signature line.');
   assert.deepEqual(signature.split(/,\s*/).map((name) => name.trim()), arguments_);
-  const section = markdown.slice(markdown.indexOf('## 9. Collisions'), markdown.indexOf('## 10. Exact and faceted'));
+  const section = markdown.slice(markdown.indexOf('## 10. Collisions'), markdown.indexOf('## 11. Exact and faceted'));
   assert.ok(section.includes(`every ${sampleMove} mm that any point`), 'The section should give the sweep step in mm.');
   assert.ok(section.includes(`shallower than ${touchDepth} mm`) && section.includes(`smaller than ${overlapFloor} mm³`), 'The section should give the depth and the volume that count as touching.');
 });
@@ -160,6 +165,32 @@ const assets = await assetsOf();
 // `assembly` adds fixture.step, a plate 60 x 40 x 6 and a post (a 8 mm cylinder, 20 mm tall) exported as two parts.
 const fixture = await builder.build({ 'f.scad': 'part("plate", color = "#8d99a6") cube([60, 40, 6]);\npart("post", color = "#c0604c") { translate([30, 20, 6]) cylinder(h = 20, d = 8); }' }, 'f.scad');
 const assemblyAssets: ProjectAssets = { ...assets, 'fixture.step': builder.exportStep(fixture) };
+
+// This test builds with the shared builder, so it comes after the top-level builds above have finished.
+test('the numbers and names the drawing section gives match the code, and its example draws as it says', async () => {
+  const section = markdown.slice(markdown.indexOf('## 9. Drawings'), markdown.indexOf('## 10. Collisions'));
+  const rows = new Map(section.split('\n').filter((line) => line.startsWith('| ')).map((line) => cells(line)).map((row) => [row[0], row[1]]));
+  const sizes = Object.values(sheetSizes);
+  assert.equal(sizes.length, 4, 'The manual lists four sheets.');
+  const label = (name: string) => rows.get(name === 'ANSI A' ? 'ANSI A (the default)' : name);
+  for (const size of sizes) assert.equal(label(size.label), `${size.width} x ${size.height}`, `The manual's size for ${size.label}.`);
+  assert.equal(defaultOptions().size, 'ansi-a', 'The manual says ANSI A is the default.');
+  assert.equal(defaultOptions().projection, 'third');
+  assert.ok(section.includes(`${titleFieldLimit} characters each`), 'The title block field limit.');
+  assert.ok(section.includes(`not more than ${hiddenLineLimit} hidden curves`), 'The hidden line limit.');
+  for (const layer of layerOrder) assert.ok(section.includes(`\`${layer}\``), `The DXF layer ${layer}.`);
+  assert.equal(defaultOptions().title.revision, 'A');
+  assert.equal(defaultOptions().title.date, '', 'The date is empty until the owner types one.');
+  // The example is the first scad block of the section: a 40 x 30 x 20 block with a through hole of 6 and a counterbore of 11, 8 deep.
+  const example = scad.find((block) => block.code.includes('part("stepped")'))!;
+  const model = await builder.build({ 'a.scad': example.code }, 'a.scad');
+  const drawing = builder.draw(model, {});
+  assert.equal(drawing.parts.length, 1);
+  const sheet = buildSheet(drawing.parts[0], defaultOptions());
+  const words = sheet.entities.flatMap((entity) => (entity.kind === 'text' ? [entity.text] : []));
+  for (const wanted of ['Ø6 THRU', 'CBORE Ø11 DEEP 8', 'SECTION A-A', '40', '30', '20']) assert.ok(words.includes(wanted), `The example's sheet has no ${wanted}: ${JSON.stringify(words)}`);
+  assert.equal(sheet.scale, '1:1', 'The block fits at 1:1 on ANSI A.');
+});
 
 /** The files of the project that a block belongs to, and which file is built. */
 function projectOf(block: CodeBlock) {

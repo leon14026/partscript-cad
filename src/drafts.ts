@@ -70,6 +70,7 @@ export async function saveDraft(draft: Project): Promise<void> {
       files: draft.files.map((file) => (isAsset(file) ? { name: file.name, asset: true } : file)),
       active: draft.active,
       entry: draft.entry,
+      drawing: draft.drawing,
     }, 'current');
     transaction.oncomplete = () => {
       stored = keep;

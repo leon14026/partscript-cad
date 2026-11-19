@@ -346,6 +346,8 @@ h1, h2, p { margin: 0; }
 /* On a wide screen the file actions sit in the header and the view switch is not there. A narrow screen turns this around. */
 .more-menu, .file-actions { display: contents; }
 .more-button, .view-switch { display: none; }
+/* The Drawing button is in the header on a wide screen and behind the ⋯ menu on a phone, where the header has no room for it. */
+.drawing-menu-item { display: none; }
 .help-touch { display: none; }
 @media (pointer: coarse) { .help-mouse { display: none; } .help-touch { display: inline; } }
 
@@ -456,3 +458,34 @@ h1, h2, p { margin: 0; }
 }
 @media (max-width: 370px) { .brand-icon, .autosave-status svg, .help-button svg { display: none; } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+/* The Drawing dialog: the settings, then the sheet as it will print, then what was left off it. */
+.drawing-dialog { width: min(980px, calc(100vw - 32px)); max-width: none; }
+.drawing-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 20px; align-items: start; }
+.drawing-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; margin-bottom: 14px; }
+.drawing-form label, .drawing-part { display: grid; gap: 4px; min-width: 0; color: #4f5d62; font-size: 11.5px; font-weight: 600; }
+.drawing-form .drawing-wide { grid-column: span 2; }
+.drawing-form label:nth-child(-n+3) { grid-column: span 2; }
+.drawing-form input, .drawing-form select, .drawing-part select { width: 100%; min-width: 0; box-sizing: border-box; height: 32px; border: 1px solid #cfcabd; border-radius: 6px; padding: 0 8px; color: var(--ink); background: #fff; font: 13px var(--sans, inherit); }
+.drawing-part { max-width: 260px; margin-bottom: 10px; }
+.sheet-image { display: block; width: 100%; height: auto; border: 1px solid #d8d4c8; border-radius: 4px; background: #fff; }
+.drawing-notes { margin: 12px 0; padding: 10px 12px; border-left: 3px solid #c9a45a; background: #f6f1e4; }
+.drawing-notes h3 { font-size: 12px; margin-bottom: 4px; }
+.drawing-notes ul { margin: 0; padding-left: 17px; color: #515e63; font-size: 12.5px; }
+.drawing-status { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: #515e63; }
+.drawing-error { color: #9a3a2e; }
+.button-outline { border: 1px solid #cfcabd; }
+.drawing-all { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.dialog-actions { margin-top: 14px; }
+@media (max-width: 710px) {
+  .drawing-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+  .drawing-layout { grid-template-columns: 1fr; }
+  .drawing-sheet { order: -1; }
+  .drawing-form { grid-template-columns: 1fr; }
+  .drawing-form .drawing-wide, .drawing-form label:nth-child(-n+3) { grid-column: auto; }
+  .drawing-form input, .drawing-form select, .drawing-part select { height: 44px; font-size: 16px; }
+  .drawing-part { max-width: none; }
+  .app-actions > .button-drawing { display: none; }
+  .file-actions .drawing-menu-item { display: flex; }
+  .drawing-dialog .button { min-height: 44px; }
+}

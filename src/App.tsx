@@ -1,13 +1,15 @@
-import { BookOpen, Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, Ellipsis, FileBox, FileCode2, FilePlus, FileUp, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { BookOpen, PencilRuler, Box, Boxes, Braces, Check, ChevronDown, ChevronRight, CircleHelp, CodeXml, Download, Ellipsis, FileBox, FileCode2, FilePlus, FileUp, FolderArchive, FolderOpen, HardDrive, LoaderCircle, Pencil, Pin, Play, Plus, Square, Terminal, TriangleAlert, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CodeEditor, type EditorControl } from './components/CodeEditor.tsx';
 import { AssetPanel } from './components/AssetPanel.tsx';
 import { Viewport } from './components/Viewport.tsx';
+import { DrawingDialog, type DrawingState } from './components/DrawingDialog.tsx';
+import { defaultOptions } from './drawing/sheet.ts';
 import { clampJoint, defaultPose, fileNamePattern, structureOf, type AssemblySpec } from './engine/assembly.ts';
 import { stemOf, unreadableFormat, formatBytes } from './engine/assets.ts';
 import { BrowserGeometryEngine } from './engine/client.ts';
 import { loopStates, openingPose, settlePose } from './engine/kinematics.ts';
-import { facetedText, flatRoundNotes } from './engine/summary.ts';
+import { facetedText, flatRoundNotes, polygonHoleNote } from './engine/summary.ts';
 import { CadError, MAX_ASSET_BYTES, MAX_PROJECT_FILES, MAX_SOURCE_BYTES, type BuildStage, type CollisionTest, type Diagnostic, type MeasurePick, type ModelPreview, type Pose } from './engine/protocol.ts';
 import { loadDraft, saveDraft } from './drafts.ts';
 import { exampleProjects } from './examples.ts';
@@ -127,6 +129,7 @@ export function App() {
   const addInput = useRef<HTMLInputElement>(null);
   const examplesMenu = useRef<HTMLDetailsElement>(null);
   const help = useRef<HTMLDialogElement>(null);
+  const drawingDialog = useRef<HTMLDialogElement>(null);
   const moreMenu = useRef<HTMLDivElement>(null);
   const tabStrip = useRef<HTMLDivElement>(null);
   const [caret, setCaret] = useState({ line: 1, column: 1, count: 1 });
@@ -138,6 +141,7 @@ export function App() {
   const shownPose = useRef(pose);
   const shownAssembly = useRef<AssemblySpec | undefined>(undefined);
   const [builtRevision, setBuiltRevision] = useState<number | null>(null);
+  const [drawn, setDrawn] = useState<DrawingState & { key?: string }>({ status: 'idle' });
   const [notice, setNotice] = useState<Notice>({ kind: 'idle', text: 'Opening the workspace…' });
   const [autosaveReady, setAutosaveReady] = useState(false);
   const [storage, setStorage] = useState<'saving' | 'saved' | 'unavailable'>('saving');
@@ -151,6 +155,14 @@ export function App() {
   const [anyFile] = useState(() => window.matchMedia('(pointer: coarse)').matches);
   const currentBuild = builtRevision === doc.revision;
   const canExport = currentBuild && stage === null;
+  const drawingOptions = useMemo(() => doc.drawing ?? defaultOptions(), [doc.drawing]);
+  /** The note on a sheet for a hole read as a polygon names the file and line, so it needs the sources and the build. */
+  const drawingContext = useMemo(() => ({
+    polygonNote: preview
+      ? (part: { names: string[] }, hole: { diameter: number; sides?: number }) =>
+        polygonHoleNote(preview, toFiles(doc), doc.entry ?? doc.active, part.names[0], hole.diameter, hole.sides ?? 0)
+      : undefined,
+  }), [preview, doc.files, doc.entry, doc.active]);
   const activeFile = doc.files.find((file) => file.name === doc.active) ?? doc.files[0];
   const target = doc.entry ?? doc.active;
 
@@ -239,6 +251,32 @@ export function App() {
         busy.current = false;
       }
     });
+  }
+
+  /** Open the Drawing dialog. The parts are read once for each build, and changing a setting only lays the sheets out again. */
+  async function openDrawing() {
+    if (!canExport || builtRevision === null) return;
+    drawingDialog.current?.showModal();
+    // The sheets depend on the build and, for the assembly sheet, on the pose shown.
+    const pose = shownPose.current;
+    const key = `${builtRevision}:${JSON.stringify(pose)}`;
+    if (drawn.status === 'ready' && drawn.key === key) return;
+    const revision = builtRevision;
+    setDrawn({ status: 'working' });
+    try {
+      const result = await query(async () => {
+        if (busy.current) throw new CadError('The engine is busy with a build or an export. Open Drawing again when it has finished.');
+        busy.current = true;
+        try {
+          return await engine.draw(revision, pose);
+        } finally {
+          busy.current = false;
+        }
+      });
+      setDrawn({ status: 'ready', result, key });
+    } catch (error) {
+      setDrawn({ status: 'error', message: error instanceof Error ? error.message : 'The drawing could not be made.' });
+    }
   }
 
   async function exportStep() {
@@ -530,7 +568,7 @@ export function App() {
     setStorage('saving');
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      void saveDraft({ files: doc.files, active: doc.active, entry: doc.entry })
+      void saveDraft({ files: doc.files, active: doc.active, entry: doc.entry, drawing: doc.drawing })
         .then(() => { if (!cancelled) setStorage('saved'); })
         .catch(() => { if (!cancelled) setStorage('unavailable'); });
     }, 260);
@@ -538,7 +576,7 @@ export function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [autosaveReady, doc.files, doc.active, doc.entry]);
+  }, [autosaveReady, doc.files, doc.active, doc.entry, doc.drawing]);
 
   // The editor is rebuilt when another file is shown. Go to the reported line once it exists.
   useEffect(() => {
@@ -589,7 +627,7 @@ export function App() {
               moreMenu.current?.querySelector<HTMLElement>('.more-button')?.focus();
             }
           }}>
-            <button className="button button-quiet more-button" type="button" title="New, Open, Save and the manual" aria-label="Files and manual" aria-expanded={moreOpen} aria-controls="file-actions" onClick={() => setMoreOpen(!moreOpen)}>
+            <button className="button button-quiet more-button" type="button" title="New, Open, Save, Drawing and the manual" aria-label="Files and manual" aria-expanded={moreOpen} aria-controls="file-actions" onClick={() => setMoreOpen(!moreOpen)}>
               <Ellipsis size={19}/>
             </button>
             <div className={`file-actions${moreOpen ? ' open' : ''}`} id="file-actions" onClick={() => setMoreOpen(false)}>
@@ -604,6 +642,9 @@ export function App() {
               </button>
               <button className="button button-quiet file-action" type="button" title="Download every file, imported ones included, as one zip to share or reopen (Ctrl/Cmd+S)" aria-label="Save project" onClick={() => void saveProject()}>
                 <FolderArchive size={17}/><span>Save project</span>
+              </button>
+              <button className="button button-quiet file-action drawing-menu-item" type="button" title={canExport ? 'Make dimensioned drawing sheets of the parts' : 'Run the current code to make drawings'} aria-label="Drawing" disabled={!canExport} onClick={() => void openDrawing()}>
+                <PencilRuler size={17}/><span>Drawing</span>
               </button>
               <a className="button button-quiet file-action" href="manual.html" target="_blank" rel="noopener" title="Open the manual in a new tab: how to use the page, and how part() and joint() work" aria-label="Manual">
                 <BookOpen size={17}/><span>Manual</span>
@@ -628,6 +669,9 @@ export function App() {
               <Play size={15} fill="currentColor" strokeWidth={1.7}/><span>Run</span><kbd className="run-key">Ctrl ↵</kbd>
             </button>
           )}
+          <button className="button button-quiet button-drawing" type="button" aria-label="Drawing" disabled={!canExport} title={canExport ? 'Make dimensioned drawing sheets of the parts' : 'Run the current code to make drawings'} onClick={() => void openDrawing()}>
+            <PencilRuler size={16}/><span>Drawing</span>
+          </button>
           <button className="button button-step" type="button" aria-label="Export STEP" disabled={!canExport} title={canExport ? (preview?.isAssembly ? 'Download the assembly as STEP, in the pose shown' : 'Download the current solid as STEP') : 'Run the current code to enable STEP export'} onClick={() => void exportStep()}>
             {stage === 'export' ? <LoaderCircle className="spin" size={16}/> : <Download size={16}/>}<span>Export STEP</span>
           </button>
@@ -742,6 +786,14 @@ export function App() {
         <button className="help-button" type="button" onClick={() => help.current?.showModal()}><CircleHelp size={15}/><span>Help &amp; source</span></button>
       </footer>
 
+      <DrawingDialog
+        ref={drawingDialog} state={drawn} options={drawingOptions} project={stemOf(doc.entry ?? doc.active)} context={drawingContext}
+        onOptions={(drawing) => updateDocument({ ...latest.current, drawing })}
+        onDownload={(file) => {
+          download(file.data as Uint8Array<ArrayBuffer>, file.name, file.type);
+          setNotice({ kind: 'success', text: `Downloaded ${file.name}.` });
+        }}/>
+
       <dialog className="help-dialog" ref={help} aria-labelledby="help-title">
         <div className="dialog-heading">
           <Braces size={22}/><h2 id="help-title">Using Partscript</h2>
@@ -765,6 +817,8 @@ export function App() {
             <dd>To make an assembly from a design kept in one file, <code>include</code> it, add <code>part = "none";</code> so it draws nothing of its own, then call its modules inside <code>part("name") ...</code>. Every part comes from a single evaluation, and an edit rebuilds only the parts that changed. Do not wrap <code>part()</code> in <code>translate()</code>; use <code>at</code> and <code>rot</code>, or move the shapes inside the braces.</dd>
             <dt>BOSL2</dt>
             <dd>Gears, threads, screws and more come from the BOSL2 library. Start the file with <code>include &lt;BOSL2/std.scad&gt;</code>, add the file you need such as <code>include &lt;BOSL2/gears.scad&gt;</code>, then call <code>spur_gear(mod = 2, teeth = 20, thickness = 8);</code>. The library is about 1.2 MB and downloads the first time a project includes it during a visit. Each run that includes it takes about a quarter of a second longer, so write many parts in one file with <code>part("name") ...</code> rather than one file per part. Gears are exact; threads are faceted, so their STEP has flat faces.</dd>
+            <dt>Drawings</dt>
+            <dd>Press <strong>Drawing</strong>, beside Export STEP, for a dimensioned sheet of each part, read from its exact solid, with a parts list and balloons on an assembly sheet when there are two or more parts. A plate gets two views and any other part gets front, top, right and an isometric, in third angle projection unless you choose first angle, on ANSI A, A4, A3 or ANSI B. The sheet has the overall sizes, a callout for each kind of round hole, the place of each hole, a hatched section A-A when a hole is blind or counterbored, and a title block whose drawn by, date, revision and material you fill in. What a sheet leaves out is listed under <strong>Not on this sheet</strong>: a faceted part gets overall sizes only, and a hole of an imported STEP is dimensioned when it is wider than Ø4. Download <strong>PDF</strong>, <strong>DXF</strong> or <strong>SVG</strong>. There are no tolerances, because OpenSCAD has none. The settings are saved with the project.</dd>
             <dt>Collisions</dt>
             <dd>Parts that share volume are a collision, and parts that only touch are not. The colliding parts turn red, yellow lines show where their surfaces cross, and a card names the pair and gives the overlap in mm³ once the joint has stopped. <strong>Check motion</strong>, the magnifier on a joint, turns it through its whole travel and lists where each pair overlaps. Press a line to go to where it starts. <strong>Stop at collision</strong>, under the joints, holds a joint at the last clear pose. Name a pair that overlaps by design with <code>allow_overlap("shaft", "plate");</code> and it is skipped. A pair that includes a faceted part is found from the preview mesh only. The <strong>Collisions</strong> button in the preview toolbar turns the whole check off and on.</dd>
             <dt>Imported STEP and STL files</dt>
@@ -772,7 +826,7 @@ export function App() {
             <dt>Sharing values</dt>
             <dd>Put shared dimensions in a file such as <code>params.scad</code> and start each part with <code>include &lt;params.scad&gt;</code>. Pin a tab to keep <strong>Run</strong> building the assembly while you edit a part. <strong>New</strong> starts a blank project with one file, the <strong>+</strong> beside the tabs adds a blank file, and the file button next to it adds a <code>.scad</code> file from your computer without replacing anything. <strong>Save project</strong> downloads every file, imported ones included, as one zip a teammate can open.</dd>
             <dt>On a phone</dt>
-            <dd>The page shows the preview or the code, one at a time: use the <strong>Preview</strong> and <strong>Code</strong> buttons under the header. New, Open, Save and the manual are behind <strong>⋯</strong>. <strong>Joints</strong> opens a strip under the model. Drag to turn the model, pinch to zoom, and tap in <strong>Measure</strong> where a mouse would click.</dd>
+            <dd>The page shows the preview or the code, one at a time: use the <strong>Preview</strong> and <strong>Code</strong> buttons under the header. New, Open, Save, Drawing and the manual are behind <strong>⋯</strong>. <strong>Joints</strong> opens a strip under the model. Drag to turn the model, pinch to zoom, and tap in <strong>Measure</strong> where a mouse would click.</dd>
             <dt>Model limits</dt>
             <dd>In millimetres. A part must have volume, and a file that draws only flat 2D shapes needs <code>linear_extrude()</code>. Libraries other than BOSL2 are unavailable in this version, and <code>text()</code> fails because no fonts are bundled. OpenSCAD evaluates geometry to six significant digits before the solid is built.</dd>
           </dl>

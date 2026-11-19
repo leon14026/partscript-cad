@@ -4,6 +4,9 @@ import { assetFormat, contentHash, stemOf } from './assets.ts';
 import { childrenText, firstColor, flatRounds, hasShapes, needsCheck, parseCsg, taggedParts, unsupported, type CsgNode } from './csg.ts';
 import { flipTriangles, maxTriangles, meshBounds, meshVolume, parseBinaryStl, parseStl, toBinaryStl, toPartMesh } from './mesh.ts';
 import { CadError, type BuildStage, type CollisionAnswer, type CollisionTest, type MeasurePick, type ModelPreview, type PartMesh, type Pose, type ProjectAssets, type ProjectFiles, type StepStructure } from './protocol.ts';
+import { drawPart } from '../drawing/views.ts';
+import { assemblyView } from '../drawing/assembly.ts';
+import type { DrawingResult, PartDrawing } from '../drawing/types.ts';
 import { measure } from './measure.ts';
 import { evaluateScad, inspectProject, renderMesh, type Evaluation, type LibraryFiles, type LibraryLoader, type OpenScadFactory } from './scad.ts';
 import { buildSolid, meshToSolid, previewSolid, writeAssemblyStep } from './solid.ts';
@@ -73,6 +76,8 @@ export class ModelBuilder {
   #cache = new Map<string, CachedSolid>();
   /** What each STEP file holds, by the hash of its bytes. Kept while a build uses the file. */
   #structures = new Map<string, StepStructure>();
+  /** The parts of a built model as the drawing reads them, so a change of pose does not read them again. */
+  #drawn = new WeakMap<BuiltModel, PartDrawing[]>();
 
   /**
    * `loadLibrary` fetches a library such as BOSL2 when a project includes it. Without one, libraries are unavailable.
@@ -456,6 +461,41 @@ export class ModelBuilder {
     } finally {
       this.#kernel.releaseSince(mark);
     }
+  }
+
+  /**
+   * What a drawing needs of each distinct part: views, holes, a section and the notes of what was left out. Parts that share a solid share
+   * a sheet, with a quantity. Drawn in the part's own coordinates, before `at` and `rot`. Holds no handles afterwards.
+   */
+  draw(model: BuiltModel, pose: Pose = {}): DrawingResult {
+    const groups = new Map<CachedSolid, number[]>();
+    model.entries.forEach((entry, i) => groups.set(entry, [...(groups.get(entry) ?? []), i]));
+    // The parts do not depend on the pose, and reading them is most of the time, so they are kept for the build.
+    let parts = this.#drawn.get(model);
+    if (!parts) {
+      parts = [...groups].map(([entry, indexes]) => {
+        const specs = indexes.map((i) => model.assembly.parts[i]);
+        // A project that is one solid and no assembly is one part that carries the project's name.
+        const names = model.preview.isAssembly ? [...new Set(specs.map((spec) => spec.name))] : [model.name];
+        const imported = specs.some((spec) => spec.file !== undefined && assetFormat(spec.file) !== undefined);
+        return drawPart(this.#kernel, { names, quantity: indexes.length, mesh: entry.mesh, shape: entry.kind === 'exact' ? entry.shape : undefined, imported });
+      });
+      this.#drawn.set(model, parts);
+    }
+    if (!model.preview.isAssembly || model.entries.length < 2) return { parts };
+
+    // The assembly sheet: every part in the pose shown, a parts list in the order the parts first appear, and a balloon for each part.
+    const entries = [...groups.keys()];
+    const item = model.entries.map((entry) => entries.indexOf(entry) + 1);
+    const matrices = solvePose(model.assembly, pose);
+    const { view, balloons } = assemblyView(model.entries.map((entry, i) => ({ mesh: entry.mesh, matrix: matrices[i] })), item);
+    const items = entries.map((entry, i) => {
+      const specs = groups.get(entry)!.map((index) => model.assembly.parts[index]);
+      const { min, max } = entry.mesh.bounds;
+      return { item: i + 1, name: [...new Set(specs.map((spec) => spec.name))].join(', '), quantity: specs.length, size: [max[0] - min[0], max[1] - min[1], max[2] - min[2]] as [number, number, number] };
+    });
+    const notes = balloons.filter((balloon) => balloon.hidden).map((balloon) => `Item ${balloon.item} (${items[balloon.item - 1].name}) is hidden behind other parts in this view, so its leader goes to the middle of it.`);
+    return { parts, assembly: { name: model.name, view, balloons, items, notes: [...new Set(notes)] } };
   }
 
   /**

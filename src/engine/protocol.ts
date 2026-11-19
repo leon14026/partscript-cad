@@ -1,3 +1,4 @@
+import type { DrawingResult } from '../drawing/types.ts';
 import type { AssemblySpec } from './assembly.ts';
 
 export const MAX_SOURCE_BYTES = 256 * 1024;
@@ -162,7 +163,8 @@ export type GeometryCommand =
   }
   | { kind: 'export'; id: number; revision: number; pose: Pose }
   | { kind: 'measure'; id: number; revision: number; pose: Pose; picks: MeasurePick[] }
-  | { kind: 'collide'; id: number; revision: number; tests: CollisionTest[] };
+  | { kind: 'collide'; id: number; revision: number; tests: CollisionTest[] }
+  | { kind: 'draw'; id: number; revision: number; pose: Pose };
 
 export type GeometryReply =
   | { kind: 'progress'; id: number; stage: BuildStage }
@@ -170,4 +172,5 @@ export type GeometryReply =
   | { kind: 'step'; id: number; bytes: Uint8Array<ArrayBuffer> }
   | { kind: 'measure'; id: number; result: MeasureResult }
   | { kind: 'collide'; id: number; answer: CollisionAnswer }
+  | { kind: 'draw'; id: number; result: DrawingResult }
   | { kind: 'error'; id: number; diagnostic: Diagnostic };
