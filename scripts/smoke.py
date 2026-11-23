@@ -216,6 +216,32 @@ with sync_playwright() as p:
         page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
         return page.inner_text('.output-message').replace('\n', ' ')
 
+    def check_play_together(name):
+        # Two joints play at once. Moving one by hand stops that joint and leaves the other playing.
+        plays = page.locator('.joint-play:not([disabled])')
+        values = page.locator('.joint-value input')
+        if plays.count() < 2:
+            problems.append(f'{name}: expected at least two joints with a play button, saw {plays.count()}')
+            return
+        before = [values.nth(i).input_value() for i in range(2)]
+        plays.nth(0).click()
+        plays.nth(1).click()
+        page.wait_for_timeout(600)
+        during = [values.nth(i).input_value() for i in range(2)]
+        pressed = page.locator('.joint-play[aria-pressed=true]').count()
+        if pressed != 2 or during[0] == before[0] or during[1] == before[1]:
+            problems.append(f'{name}: two joints should play at once and both should move: {before} -> {during}, {pressed} playing')
+        values.nth(0).fill('7')
+        page.wait_for_timeout(200)
+        typed = values.nth(0).input_value()
+        page.wait_for_timeout(300)
+        if plays.nth(0).get_attribute('aria-pressed') != 'false' or plays.nth(1).get_attribute('aria-pressed') != 'true' or values.nth(0).input_value() != typed:
+            problems.append(f'{name}: typing a value should stop that joint only and hold the value: {typed} -> {values.nth(0).input_value()}')
+        plays.nth(1).click()
+        page.wait_for_timeout(100)
+        if page.locator('.joint-play[aria-pressed=true]').count():
+            problems.append(f'{name}: a second tap on Play should stop the joint')
+
     def check_import(example_index):
         # Export the swivel arm as STEP, open that file and an STL back into the project as imported files, use them as parts,
         # reload the page, and save the project as a zip.
@@ -773,6 +799,7 @@ with sync_playwright() as p:
             if followers_before and followers_before == followers_after:
                 problems.append(f'{name}: the joints that follow did not change when the first joint was played: {followers_after}')
         if name == 'Swivel arm assembly':
+            check_play_together(name)
             check_measure_assembly(name)
         page.wait_for_timeout(300)
         page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}{index + 1}.png"))

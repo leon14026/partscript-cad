@@ -264,6 +264,29 @@ export function moveJoint(assembly: AssemblySpec, pose: Pose, name: string, targ
   return { pose: toPose(assembly, values, pose), reached: Math.abs(goal - values[j]) <= 1e-9 };
 }
 
+/** How fast Play moves a joint: a hinge turns 110 degrees a second, and any other joint crosses its travel in 2.5 seconds. */
+export function playSpeed(assembly: AssemblySpec, name: string) {
+  const joint = assembly.joints.find((item) => item.name === name);
+  if (!joint) return 0;
+  return joint.type === 'hinge' ? 110 : (joint.limits[1] - joint.limits[0]) / 2.5;
+}
+
+/**
+ * One frame of Play for one joint. It moves `seconds` along `direction` (1 or -1) and says which way to go next: a joint with
+ * stops turns round at either end, and so does one that meets a dead point. Playing several joints at once is this, one joint
+ * after another, each starting from the pose the one before left.
+ */
+export function playStep(assembly: AssemblySpec, pose: Pose, name: string, direction: 1 | -1, seconds: number): { pose: Pose; direction: 1 | -1; value: number } {
+  const joint = assembly.joints.find((item) => item.name === name);
+  if (!joint) return { pose, direction, value: 0 };
+  const moved = advanceJoint(assembly, pose, name, direction * playSpeed(assembly, name) * seconds);
+  const value = moved.pose[name] ?? clampJoint(joint, pose[name]);
+  const [low, high] = joint.limits;
+  const atStop = !turnsFully(joint) && (value >= high - 1e-9 || value <= low + 1e-9);
+  if (atStop) return { pose: moved.pose, direction: value <= low + 1e-9 ? 1 : -1, value };
+  return { pose: moved.pose, direction: moved.reached ? direction : (-direction as 1 | -1), value };
+}
+
 /**
  * Move a joint by an amount, for animation. A hinge with no end stops keeps
  * turning past its last value and continues from its first.

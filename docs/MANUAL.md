@@ -193,6 +193,8 @@ The preview shows a slider for each joint that can move. Dragging one moves the 
 4. Change the elbow's `limits` to `[0, 60]`. The elbow slider stops at 60.
 5. Change the shoulder to `type = "slider"`, `axis = [0, 0, 1]`, `limits = [0, 20]` and `value = 10`. The arm now rides straight up and down instead of turning. A slider needs `limits`, and `value` has to lie inside them.
 
+**Playing joints.** Press play on a joint's row and it runs through its travel. A hinge without `limits` keeps turning, and any other joint runs back and forth. Press play on a second joint and both run at once, and a third makes three. Each runs at its own speed: a hinge turns 110° a second, and a slider crosses its travel in 2.5 seconds. So two joints drift in and out of step. To keep two in step, write one of them with `follow` (section 5). Moving a joint by hand stops that joint, and the others carry on. A joint that follows another has no play button.
+
 **A slider and a fixed joint.** The carriage slides 70 mm along the rail. A cover is fixed to the carriage and travels with it:
 
 ```scad

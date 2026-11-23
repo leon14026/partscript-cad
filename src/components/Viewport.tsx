@@ -1,7 +1,7 @@
 import { Box, Boxes, Check, Copy, CornerDownRight, Expand, Eye, EyeOff, Grid3X3, Layers2, Link2, LoaderCircle, Mouse, MoveHorizontal, Pause, Play, Ruler, RotateCcw, RotateCw, ScanSearch, ShieldAlert, ShieldOff, TriangleAlert, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { clampJoint, followerStates, movingJoints, poseBounds, solvePose, structureOf, turnsFully, type JointSpec } from '../engine/assembly.ts';
-import { advanceJoint, loopStates, moveJoint } from '../engine/kinematics.ts';
+import { clampJoint, followerStates, movingJoints, poseBounds, solvePose, structureOf, type JointSpec } from '../engine/assembly.ts';
+import { loopStates, moveJoint, playStep } from '../engine/kinematics.ts';
 import type { CollisionAnswer, CollisionTest, MeasurePick, MeasureResult, ModelPreview, Pose, Reading } from '../engine/protocol.ts';
 import { partQualities } from '../engine/summary.ts';
 import { CollisionChecker, clearMove, overlapFloor, sweepJoint, type PairHit, type SweepResult } from '../collision.ts';
@@ -15,6 +15,8 @@ const angles: { angle: ViewAngle; label: string; name: string }[] = [
   { angle: 'right', label: 'RIGHT', name: 'Right' },
 ];
 const measure = new Intl.NumberFormat('en-US', { maximumFractionDigits: 4, useGrouping: false });
+/** No joint is playing. One shared list, so setting it again does not redraw the page. */
+const none: readonly string[] = [];
 // Readings of the Measure tool: 0.001 mm (and mm²), 0.01 degree.
 const lengthFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3, useGrouping: false });
 const angleFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2, useGrouping: false });
@@ -207,7 +209,8 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
   const [angle, setAngle] = useState<ViewAngle | null>('iso');
   // On a narrow screen the panel starts as one row, so it does not cover the model.
   const [jointsOpen, setJointsOpen] = useState(() => !window.matchMedia('(max-width: 710px)').matches);
-  const [playing, setPlaying] = useState<string | null>(null);
+  // The joints that Play is running, in the order they were started. Any number can run at once.
+  const [playing, setPlaying] = useState<readonly string[]>(none);
   // Parts left out of the preview, by name. The STEP export still holds every part.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const partsMenu = useRef<HTMLDetailsElement>(null);
@@ -225,8 +228,8 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
   const motionToken = useRef(0);
   const [verdicts, setVerdicts] = useState<{ pose: Pose; volumes: Map<number, number | null> } | null>(null);
   const checker = useMemo(() => (model && collisionsOn ? new CollisionChecker(model.assembly, model.partMesh.map((i) => model.meshes[i])) : null), [model, collisionsOn]);
-  const live = useRef({ model, pose, onPose, onMeasure, picks, measuring, checker, stopAtCollision });
-  live.current = { model, pose, onPose, onMeasure, picks, measuring, checker, stopAtCollision };
+  const live = useRef({ model, pose, onPose, onMeasure, picks, measuring, checker, stopAtCollision, playing });
+  live.current = { model, pose, onPose, onMeasure, picks, measuring, checker, stopAtCollision, playing };
 
   useEffect(() => {
     if (!canvasHost.current) return;
@@ -252,40 +255,46 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
       controller.current?.setPose(pose, dragging.current);
     }
   }, [model, pose]);
-  // Play: run one joint through its travel. A hinge without end stops keeps turning.
-  // Any other joint goes back and forth, and so does one that meets a dead point.
+  // Play: run the joints that are switched on, each through its travel, all at once. A hinge without end stops keeps turning.
+  // Any other joint goes back and forth, and so does one that meets a dead point. Each frame moves the joints one after another,
+  // each from the pose the one before left, so joints that share a loop still keep it shut. Two joints that run at their own
+  // speeds drift in and out of step. To keep two in step, write one of them with follow (section 5 of the manual).
+  const anyPlaying = playing.length > 0;
   useEffect(() => {
-    if (!playing) return;
-    let direction = 1;
+    if (!anyPlaying) return;
+    const directions = new Map<string, 1 | -1>();
     let last = performance.now();
     let frame = requestAnimationFrame(function tick(now) {
-      const { model: current, pose: at, onPose: send } = live.current;
-      const joint = current?.assembly.joints.find((item) => item.name === playing);
-      if (!current || !joint) {
-        setPlaying(null);
+      const { model: current, pose: at, onPose: send, playing: names } = live.current;
+      if (!current) {
+        setPlaying(none);
         return;
       }
       const seconds = Math.min(0.05, (now - last) / 1000);
       last = now;
-      const speed = joint.type === 'hinge' ? 110 : (joint.limits[1] - joint.limits[0]) / 2.5;
-      let moved = advanceJoint(current.assembly, at, joint.name, direction * speed * seconds);
-      const value = moved.pose[joint.name];
-      if (live.current.stopAtCollision && live.current.checker) {
-        const clear = clearMove(live.current.checker, at, joint.name, value);
-        if (clear.blocked) {
-          setStopNote(`${joint.name} stopped: ${pairNames(current, clear.by)}`);
-          dragging.current = false;
-          setPlaying(null);
-          send(clear.pose);
-          return;
+      let pose = at;
+      const stopped: string[] = [];
+      for (const name of names) {
+        if (!current.assembly.joints.some((item) => item.name === name)) {
+          stopped.push(name);
+          continue;
         }
-        moved = { pose: clear.pose, reached: moved.reached };
+        const step = playStep(current.assembly, pose, name, directions.get(name) ?? 1, seconds);
+        if (live.current.stopAtCollision && live.current.checker) {
+          const clear = clearMove(live.current.checker, pose, name, step.value);
+          pose = clear.pose;
+          if (clear.blocked) {
+            setStopNote(`${name} stopped: ${pairNames(current, clear.by)}`);
+            stopped.push(name);
+            continue;
+          }
+        } else pose = step.pose;
+        directions.set(name, step.direction);
       }
-      const atStop = !turnsFully(joint) && (value >= joint.limits[1] - 1e-9 || value <= joint.limits[0] + 1e-9);
-      if (!moved.reached || atStop) direction = atStop ? (value <= joint.limits[0] + 1e-9 ? 1 : -1) : -direction;
-      dragging.current = true;
-      send(moved.pose);
-      frame = requestAnimationFrame(tick);
+      if (stopped.length) setPlaying((still) => still.filter((name) => !stopped.includes(name)));
+      dragging.current = stopped.length < names.length;
+      send(pose);
+      if (stopped.length < names.length) frame = requestAnimationFrame(tick);
     });
     return () => {
       cancelAnimationFrame(frame);
@@ -293,8 +302,8 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
       // Redraw at full quality once the motion stops.
       controller.current?.setPose(live.current.pose, false);
     };
-  }, [playing]);
-  useEffect(() => setPlaying(null), [model]);
+  }, [anyPlaying]);
+  useEffect(() => setPlaying(none), [model]);
   useEffect(() => controller.current?.showGrid(grid), [grid]);
   useEffect(() => controller.current?.showEdges(edges), [edges]);
   useEffect(() => controller.current?.setHidden(hidden), [hidden]);
@@ -384,7 +393,7 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
     if (!model || !checker) return;
     const token = ++motionToken.current;
     const stopped = () => token !== motionToken.current;
-    setPlaying(null);
+    setPlaying(none);
     setStopNote(null);
     const start = pose;
     setMotion({ joint: name, phase: 'sweep', done: 0 });
@@ -475,7 +484,7 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
       setMeasureError(null);
       return;
     }
-    setPlaying(null);
+    setPlaying(none);
     const job = { picks: picks.map(({ part, type, index }): MeasurePick => ({ part, type, index })), pose };
     state.latest = job;
     state.wanted = job;
@@ -687,15 +696,16 @@ export function Viewport({ model, pose, stale, running, onPose, onResetPose, onM
               <div className="joint-list">
                 {joints.map((joint) => (
                   <JointControl key={joint.name} joint={joint} value={clampJoint(joint, pose[joint.name])}
-                    linked={looped[model!.assembly.joints.indexOf(joint)]} playing={playing === joint.name} locked={picks.length > 0}
+                    linked={looped[model!.assembly.joints.indexOf(joint)]} playing={playing.includes(joint.name)} locked={picks.length > 0}
                     checking={motion?.joint === joint.name && !motion.report} canCheck={partCount > 1 && !(motion && !motion.report)} showCheck={collisionsOn}
-                    onPlay={() => setPlaying(playing === joint.name ? null : joint.name)}
+                    onPlay={() => setPlaying(playing.includes(joint.name) ? playing.filter((name) => name !== joint.name) : [...playing, joint.name])}
                     onCheck={() => {
                       if (motion && !motion.report) motionToken.current++, setMotion(null);
                       else void checkMotion(joint.name);
                     }}
                     onChange={(value, isDragging) => {
-                      if (playing) setPlaying(null);
+                      // Moving a joint by hand stops that joint. Any others keep playing.
+                      if (playing.includes(joint.name)) setPlaying(playing.filter((name) => name !== joint.name));
                       dragging.current = isDragging;
                       // In a loop the other joints follow, and the move stops where the loop would open.
                       onPose(isDragging || value !== clampJoint(joint, pose[joint.name]) ? stepJoint(joint.name, value) : { ...pose });
