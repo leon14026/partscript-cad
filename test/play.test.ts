@@ -28,6 +28,10 @@ const { assembly } = (
       joint("swing", type = "hinge", parent = "base", child = "arm", limits = [0, 90]);
       joint("slide", type = "slider", parent = "base", child = "carriage", axis = [1, 0, 0], limits = [0, 100]);
       joint("spin", type = "hinge", parent = "base", child = "wheel");
+      part("slow") cube([4, 4, 4]);
+      part("belt") cube([4, 4, 4]);
+      joint("slow", type = "hinge", parent = "base", child = "slow", limits = [0, 90], speed = 30);
+      joint("belt", type = "slider", parent = "base", child = "belt", axis = [0, 1, 0], limits = [0, 100], speed = 10);
     `,
   }, 'main.scad')
 ).preview;
@@ -39,6 +43,19 @@ test('Play moves a hinge 110 degrees a second and a slider across its travel in 
   // 0.4 s of a hinge is 44 degrees, and 0.5 s of the slider is 20 mm.
   near(playStep(assembly, {}, 'swing', 1, 0.4).pose.swing, 44);
   near(playStep(assembly, {}, 'slide', 1, 0.5).pose.slide, 20);
+});
+
+test('a joint with a speed of its own plays at that speed, and the others keep the default', () => {
+  near(playSpeed(assembly, 'slow'), 30);
+  near(playSpeed(assembly, 'belt'), 10);
+  near(playSpeed(assembly, 'swing'), 110);
+  // 0.4 s of a hinge at 30 degrees a second is 12 degrees, and 0.5 s of a slider at 10 mm a second is 5 mm.
+  near(playStep(assembly, {}, 'slow', 1, 0.4).pose.slow, 12);
+  near(playStep(assembly, {}, 'belt', 1, 0.5).pose.belt, 5);
+  // The speed sets the pace and not the stops: from 80 degrees, 1 s at 30 degrees a second asks for 110 and stops at 90.
+  const stop = playStep(assembly, { slow: 80 }, 'slow', 1, 1);
+  near(stop.pose.slow, 90);
+  assert.equal(stop.direction, -1);
 });
 
 test('a joint with stops turns round at the end of its travel', () => {

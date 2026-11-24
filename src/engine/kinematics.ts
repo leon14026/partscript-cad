@@ -264,10 +264,14 @@ export function moveJoint(assembly: AssemblySpec, pose: Pose, name: string, targ
   return { pose: toPose(assembly, values, pose), reached: Math.abs(goal - values[j]) <= 1e-9 };
 }
 
-/** How fast Play moves a joint: a hinge turns 110 degrees a second, and any other joint crosses its travel in 2.5 seconds. */
+/**
+ * How fast Play moves a joint, in degrees a second for a hinge and millimetres a second for a slider. It is the joint's own
+ * speed when the code sets one. Otherwise a hinge turns 110 degrees a second, and any other joint crosses its travel in 2.5 seconds.
+ */
 export function playSpeed(assembly: AssemblySpec, name: string) {
   const joint = assembly.joints.find((item) => item.name === name);
   if (!joint) return 0;
+  if (joint.speed !== undefined) return joint.speed;
   return joint.type === 'hinge' ? 110 : (joint.limits[1] - joint.limits[0]) / 2.5;
 }
 
