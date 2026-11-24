@@ -18,8 +18,8 @@ module part(name = undef, file = undef, at = [0, 0, 0], rot = [0, 0, 0], color =
     echo(["@partscript", "part", name, file, _ps_v(at), _ps_v(rot), _ps_v(color), $children, component, body]);
     if ($children > 0) render(convexity = 900000 + _ps_hash(is_string(name) ? name : "")) children();
 }
-module joint(name = undef, type = "fixed", parent = undef, child = undef, at = [0, 0, 0], rot = [0, 0, 0], axis = [0, 0, 1], limits = undef, value = undef, child_at = [0, 0, 0], child_rot = [0, 0, 0], follow = undef, ratio = undef, offset = undef, table = undef) {
-    echo(["@partscript", "joint", name, type, parent, child, _ps_v(at), _ps_v(rot), _ps_v(axis), _ps_v(limits), _ps_n(value), _ps_v(child_at), _ps_v(child_rot), follow, _ps_n(ratio), _ps_n(offset), _ps_t(table)]);
+module joint(name = undef, type = "fixed", parent = undef, child = undef, at = [0, 0, 0], rot = [0, 0, 0], axis = [0, 0, 1], limits = undef, value = undef, child_at = [0, 0, 0], child_rot = [0, 0, 0], follow = undef, ratio = undef, offset = undef, table = undef, speed = undef) {
+    echo(["@partscript", "joint", name, type, parent, child, _ps_v(at), _ps_v(rot), _ps_v(axis), _ps_v(limits), _ps_n(value), _ps_v(child_at), _ps_v(child_rot), follow, _ps_n(ratio), _ps_n(offset), _ps_t(table), _ps_n(speed)]);
 }
 module allow_overlap(a = undef, b = undef) {
     echo(["@partscript", "allow", a, b]);
@@ -88,6 +88,11 @@ export interface JointSpec {
    * driver's value is looked up in it first (linear between rows).
    */
   follow?: { joint: string; ratio: number; offset: number; table?: [number, number][] };
+  /**
+   * How fast Play moves this joint: degrees a second for a hinge, millimetres a second for a slider. Absent when the code
+   * did not set speed, and Play then uses its own pace (playSpeed in kinematics.ts).
+   */
+  speed?: number;
 }
 
 export interface AssemblySpec {
@@ -329,7 +334,14 @@ export function readAssembly(records: string[]): AssemblySpec {
           if (value < limits[0] - 1e-9 || value > limits[1] + 1e-9) fail(what, `value ${value} is outside limits [${limits[0]}, ${limits[1]}].`);
         }
       }
-      joints.push({ name, type, parent, child, at, rot, childAt, childRot, axis, limits, value, given: fields[10] !== null, follow });
+      let speed: number | undefined;
+      if ((fields[17] ?? null) !== null) {
+        if (type === 'fixed') fail(what, 'a fixed joint does not move. Remove speed or change the type.');
+        if (follow) fail(what, 'a joint that follows another moves with it and has no Play speed of its own. Remove speed.');
+        speed = number(fields[17], what, 'speed');
+        if (speed <= 0) fail(what, 'speed must be more than 0: degrees a second for a hinge, millimetres a second for a slider.');
+      }
+      joints.push({ name, type, parent, child, at, rot, childAt, childRot, axis, limits, value, given: fields[10] !== null, follow, ...(speed === undefined ? {} : { speed }) });
     } else if (fields[1] === 'allow') {
       allowances.push({ a: fields[2], b: fields[3] });
     }

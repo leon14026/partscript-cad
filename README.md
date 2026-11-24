@@ -106,7 +106,7 @@ joint("rocker_pin", type = "hinge", parent = "coupler", child = "rocker",
 
 `child_at` and `child_rot` say where a joint sits on the child when that is not the child's origin. A part with two joints needs them on at least one.
 
-A closing joint has no slider. The joints around its loop move together to keep it shut. Drag any of them, or press play on one: a hinge without `limits` keeps turning, and any other joint runs back and forth. Press play on a second joint and both run at once, each at its own speed. A move stops where the loop can no longer stay shut, such as the end of a rocker's swing or a piston's dead centre. The solver takes small steps from the current pose, so a linkage stays in the form it was assembled in.
+A closing joint has no slider. The joints around its loop move together to keep it shut. Drag any of them, or press play on one: a hinge without `limits` keeps turning, and any other joint runs back and forth. Press play on a second joint and both run at once, each at its own speed: 110° a second for a hinge unless the joint has a `speed` (degrees a second, or mm a second for a slider). A move stops where the loop can no longer stay shut, such as the end of a rocker's swing or a piston's dead centre. The solver takes small steps from the current pose, so a linkage stays in the form it was assembled in.
 
 In a loop, the first joint with a `value` is held when the model opens, and the `value` of any other joint is a starting guess. A guess picks between the forms a linkage can assemble in, such as open and crossed. If the links cannot reach each other, the build output names the closing joint and the gap that is left.
 

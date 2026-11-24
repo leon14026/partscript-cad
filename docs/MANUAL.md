@@ -147,7 +147,7 @@ A **joint** hangs one part (the child) from another (the parent). Parts that no 
 
 ```text
 joint(name, type, parent, child, at, rot, axis, limits, value,
-      child_at, child_rot, follow, ratio, offset, table)
+      child_at, child_rot, follow, ratio, offset, table, speed)
 ```
 
 Write the arguments by name, as every example here does. The order above is the order OpenSCAD would take them in if you left the names out.
@@ -166,6 +166,7 @@ Write the arguments by name, as every example here does. The order above is the 
 | `limits` | `[lowest, highest]` travel. A hinge with no limits turns all the way round. A slider must have limits. A fixed joint takes none. | degrees (hinge), mm (slider) | Hinge `[-180, 180]` |
 | `value` | The position the model opens in. It must lie inside `limits`. | degrees or mm | 0, or the nearest limit when 0 is outside |
 | `follow`, `ratio`, `offset`, `table` | Make this joint move with another one. See section 5. | | None |
+| `speed` | How fast **Play** moves this joint. It must be more than 0. A fixed joint and a joint that follows another take none. | degrees a second (hinge), mm a second (slider) | Hinge 110. Slider: its whole travel in 2.5 seconds |
 
 **How the child is placed.** With the joint at zero, the point `child_at` of the child sits on the point `at` of the parent, and their frames line up. Then the joint moves the child: a hinge turns it about `axis` through that point, and a slider pushes it along `axis`. A positive hinge angle turns right-handed about `axis`: point your right thumb along the axis and your fingers curl the way it turns.
 
@@ -193,7 +194,18 @@ The preview shows a slider for each joint that can move. Dragging one moves the 
 4. Change the elbow's `limits` to `[0, 60]`. The elbow slider stops at 60.
 5. Change the shoulder to `type = "slider"`, `axis = [0, 0, 1]`, `limits = [0, 20]` and `value = 10`. The arm now rides straight up and down instead of turning. A slider needs `limits`, and `value` has to lie inside them.
 
-**Playing joints.** Press play on a joint's row and it runs through its travel. A hinge without `limits` keeps turning, and any other joint runs back and forth. Press play on a second joint and both run at once, and a third makes three. Each runs at its own speed: a hinge turns 110° a second, and a slider crosses its travel in 2.5 seconds. So two joints drift in and out of step. To keep two in step, write one of them with `follow` (section 5). Moving a joint by hand stops that joint, and the others carry on. A joint that follows another has no play button.
+**Playing joints.** Press play on a joint's row and it runs through its travel. A hinge without `limits` keeps turning, and any other joint runs back and forth. Press play on a second joint and both run at once, and a third makes three. Each runs at its own speed. A hinge turns 110° a second and a slider crosses its travel in 2.5 seconds, unless the joint has a `speed`, which is degrees a second for a hinge and mm a second for a slider. Two joints with different speeds drift in and out of step. To keep two exactly in step, write one of them with `follow` (section 5). Moving a joint by hand stops that joint, and the others carry on. A joint that follows another has no play button.
+
+A wheel that turns at 180° a second beside a flap that swings slowly between its stops, 20° a second:
+
+```scad
+part("base", color = "#8d99a6") cube([60, 40, 6]);
+part("wheel", color = "#c0604c") translate([-8, -8, 0]) cube([16, 16, 4]);
+part("flap",  color = "#6fa8a0") translate([0, -3, 0]) cube([24, 6, 3]);
+
+joint("wheel", type = "hinge", parent = "base", child = "wheel", at = [20, 20, 6], speed = 180);
+joint("flap",  type = "hinge", parent = "base", child = "flap",  at = [36, 20, 6], limits = [-30, 30], speed = 20);
+```
 
 **A slider and a fixed joint.** The carriage slides 70 mm along the rail. A cover is fixed to the carriage and travels with it:
 
@@ -902,7 +914,8 @@ part("name", "robot.step", body = 2);   // the second solid in the file
 joint("name", type = "hinge", parent = "a", child = "b",
       at = [x, y, z], rot = [a, b, c],            // the joint, in the parent
       child_at = [x, y, z], child_rot = [a, b, c], // the same joint, in the child
-      axis = [0, 0, 1], limits = [low, high], value = v);
+      axis = [0, 0, 1], limits = [low, high], value = v,
+      speed = s);                                  // Play speed: degrees or mm a second
 ```
 
 | `type` | Moves | `limits` | Default `limits` |

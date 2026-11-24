@@ -278,6 +278,17 @@ test('followers chain in any order of writing, and a 5,000 row table is read', a
   assert.equal(followerStates(assembly, {})[2].joint.follow!.table!.length, 5000);
 });
 
+test('a speed that cannot work is refused with the joint named and what to change', async () => {
+  const bad = async (joints: string, message: RegExp) => assert.rejects(
+    builder.build(blocks(`part("frame", "a.scad"); part("p", "a.scad"); part("q", "a.scad"); ${joints}`), 'main.scad'), message);
+  const base = 'joint("p", type = "hinge", parent = "frame", child = "p");';
+  await bad('joint("p", type = "hinge", parent = "frame", child = "p", speed = 0);', /joint\("p"\): speed must be more than 0: degrees a second for a hinge, millimetres a second for a slider/);
+  await bad('joint("p", type = "hinge", parent = "frame", child = "p", speed = -5);', /speed must be more than 0/);
+  await bad('joint("p", type = "fixed", parent = "frame", child = "p", speed = 20);', /joint\("p"\): a fixed joint does not move\. Remove speed or change the type/);
+  await bad(`${base} joint("q", type = "hinge", parent = "frame", child = "q", follow = "p", speed = 20);`, /joint\("q"\): a joint that follows another moves with it and has no Play speed of its own\. Remove speed/);
+  await bad('joint("p", type = "hinge", parent = "frame", child = "p", speed = "fast");', /joint\("p"\): speed must be a number/);
+});
+
 test('a follower that cannot work is refused with the joint named and what to change', async () => {
   const bad = async (joints: string, message: RegExp) => assert.rejects(
     builder.build(blocks(`part("frame", "a.scad"); part("p", "a.scad"); part("q", "a.scad"); ${joints}`), 'main.scad'), message);
