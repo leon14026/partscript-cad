@@ -7,6 +7,7 @@ import { renderMesh, type OpenScadFactory } from '../src/engine/scad.ts';
 import { meshVolume, parseBinaryStl } from '../src/engine/mesh.ts';
 import { facetedText } from '../src/engine/summary.ts';
 import { exampleProjects } from '../src/examples.ts';
+import { loadLibrary } from './libraries.ts';
 
 const engine = new URL('../public/engines/openscad/openscad.js', import.meta.url);
 const wasm = await readFile(new URL('openscad.wasm', engine));
@@ -17,7 +18,7 @@ const openScad: OpenScadFactory = (options) => {
   return instantiate({ ...options, wasmBinary: wasm });
 };
 const kernel = await OcctKernel.init();
-const builder = new ModelBuilder(kernel, openScad);
+const builder = new ModelBuilder(kernel, openScad, loadLibrary);
 const output = new URL('../.test-output/', import.meta.url);
 await mkdir(output, { recursive: true });
 
@@ -159,6 +160,13 @@ test('the summary lists at most three files and counts the rest', async () => {
 test('every example still builds with every part exact', async () => {
   for (const example of exampleProjects) {
     const model = await builder.build(example.files, example.open);
+    if (example.name === 'Label fan folder') {
+      // The machine's rocker is a hull() in the owner's design, so it is the one faceted part, and the page says why.
+      const faceted = model.preview.assembly.parts.filter((_, index) => model.preview.meshes[model.preview.partMesh[index]].quality !== 'exact');
+      assert.deepEqual(faceted.map((part) => part.name), ['rocker']);
+      assert.equal(facetedText(model.preview), '1 part is faceted (rocker uses hull).');
+      continue;
+    }
     assert.ok(model.preview.meshes.every((mesh) => mesh.quality === 'exact'), `${example.name} should be exact`);
     assert.equal(facetedText(model.preview), '');
   }

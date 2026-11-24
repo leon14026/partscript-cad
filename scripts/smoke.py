@@ -765,12 +765,18 @@ with sync_playwright() as p:
 
     page.click('summary[aria-label="Examples"]')
     names = [item.inner_text() for item in page.locator('.examples-popover button strong').all()]
+    bosl2_asked = False   # the Label fan folder includes BOSL2, and no example before it does
     page.keyboard.press('Escape')
     for index, name in enumerate(names):
         page.click('summary[aria-label="Examples"]')
+        previous = page.inner_text('.output-message')
         with answering():
             page.locator('.examples-popover button').nth(index).click()
-        page.wait_for_timeout(200)   # the build starts at once; a small part can finish within this time
+        # The build starts from an effect after the click. Wait until it has (the box says it is working, or its text is new)
+        # before taking a success for this example's: the page is slow to start one after a long build with software rendering.
+        page.wait_for_function(
+            "(old) => { const box = document.querySelector('.output-message'); return !!box && (box.classList.contains('working') || box.innerText !== old); }",
+            arg=previous, timeout=120000)
         page.wait_for_selector('.output-message.success, .output-message.error', timeout=120000)
         notice = page.inner_text('.output-message').replace('\n', ' ')
         if page.locator('.output-message.error').count():
@@ -781,6 +787,16 @@ with sync_playwright() as p:
             rows = followers.all_inner_texts()
             if len(rows) != 2 or 'follows crank' not in rows[0] or '60°' not in rows[0] or 'follows wheel' not in rows[1] or '3 mm' not in rows[1]:
                 problems.append(f'{name}: expected the wheel to follow the crank at -60° and the plunger to follow the wheel at 3 mm, saw {rows}')
+        if name != 'Label fan folder' and library_fetches and not bosl2_asked:
+            problems.append(f'{name}: BOSL2 was fetched for an example that does not include it: {library_fetches}')
+        if name == 'Label fan folder':
+            bosl2_asked = True
+            if [status for status, _ in library_fetches] != [200]:
+                problems.append(f'{name}: BOSL2 should be fetched once, with status 200: {library_fetches}')
+            # Seven parts and seven joints. The drum follows the crank, the roller follows the drum, and BOSL2 is fetched for it.
+            rows = followers.all_inner_texts()
+            if 'Built 7 parts and 7 joints' not in notice or len(rows) != 2 or 'follows crank' not in rows[0] or 'follows drum' not in rows[1]:
+                problems.append(f'{name}: expected 7 parts and 7 joints with the drum following the crank and the roller the drum: {notice} / {rows}')
         if name == 'Crank-rocker linkage':
             check_hiding(name)
         if name == 'Mounting plate':
@@ -957,9 +973,10 @@ with sync_playwright() as p:
 
     check_collisions()
 
-    # BOSL2 is fetched only when a project includes it. Nothing above should have asked for it.
-    if library_fetches:
-        problems.append(f'BOSL2 was fetched before any project included it: {library_fetches}')
+    # BOSL2 is fetched only when a project includes it: the Label fan folder example above did, and nothing else has.
+    fetched_before = len(library_fetches)
+    if fetched_before != 1:
+        problems.append(f'BOSL2 should have been fetched once, for the Label fan folder example: {library_fetches}')
     page.click('.cm-content')
     page.keyboard.press('Control+A')
     page.keyboard.type('include <BOSL2/std.scad> include <BOSL2/gears.scad> spur_gear(mod = 2, teeth = 20, thickness = 8);', delay=5)
@@ -970,8 +987,8 @@ with sync_playwright() as p:
     # A gear is a prism of its tooth outline, so it builds exact and the notice does not mention a faceted part.
     if 'Built one solid' not in notice or 'faceted' in notice or page.locator('.output-message.error').count():
         problems.append(f'BOSL2 gear: {notice}')
-    if [status for status, _ in library_fetches] != [200]:
-        problems.append(f'BOSL2 should be fetched once with status 200: {library_fetches}')
+    if any(status != 200 for status, _ in library_fetches) or len(library_fetches) - fetched_before > 1:
+        problems.append(f'BOSL2 should be fetched with status 200, and at most once more for the gear: {library_fetches}')
     page.wait_for_timeout(300)
     page.screenshot(path=str(shots / f"smoke-{'software-' if args.software else ''}bosl2.png"))
     print(f'BOSL2 gear: {notice} (fetches: {len(library_fetches)})')

@@ -1,5 +1,6 @@
 import { swivelArm } from './assemblyExample.ts';
 import { gearedMechanism } from './gearedExample.ts';
+import { labelFanFolder } from './fanFolderExample.ts';
 import { crankRocker } from './linkageExample.ts';
 import type { ProjectFiles } from './engine/protocol.ts';
 
@@ -129,6 +130,12 @@ export const exampleProjects: ExampleProject[] = [
     description: 'A crank turns a wheel twice as fast the other way, and the wheel lifts a plunger by a formula.',
     files: gearedMechanism,
     open: 'geared.scad',
+  },
+  {
+    name: 'Label fan folder',
+    description: 'A real machine: a crank drives a pentagon drum, and a four-bar linkage swings the chute. The page loads BOSL2 for it, so the first build takes longer.',
+    files: labelFanFolder,
+    open: 'assembly.scad',
   },
   ...examples.map((example) => ({
     name: example.name,

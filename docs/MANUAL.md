@@ -19,7 +19,7 @@ This manual is for a mechanical engineer who knows CAD and does not write code. 
 - **Run** (Ctrl or Cmd + Enter) builds the model. **Cancel** takes its place while a build runs.
 - **Drawing** opens dimensioned sheets of the parts, to download as PDF, DXF or SVG (section 9).
 - **Export STEP** downloads the model you see. For an assembly it writes one named, coloured component per part, in the pose shown.
-- **Examples** opens a menu of ready projects: a swivel arm, a crank-rocker linkage, a gear and cam, and four single parts. They are a good way to see how a finished file looks.
+- **Examples** opens a menu of ready projects: a swivel arm, a crank-rocker linkage, a gear and cam, a hand-cranked label fan folder, and four single parts. They are a good way to see how a finished file looks.
 
 **Files and tabs.** A project is a set of files, each with a tab. The **+** beside the tabs adds a blank file, and the file button next to it adds a `.scad` file from your computer. Neither replaces anything: a file whose name is taken is added with a number, so `arm.scad` becomes `arm_2.scad`, and the page says so. The new file is opened, so pin your main file if you want Run to keep building the assembly. A saved project (`.zip`) is not added this way: use **Open**. The pencil on a tab renames it, the cross deletes it, and the pin makes Run build that file whichever tab is open. Pin the file that lists your parts, so you can edit a part file and still run the whole assembly. A project holds up to 40 files.
 
